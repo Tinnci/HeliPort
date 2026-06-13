@@ -5,6 +5,11 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      publish_prerelease:
+        description: 'Publish an immutable alpha prerelease'
+        required: false
+        type: boolean
+        default: false
       publish_release:
         description: 'Publish a stable release'
         required: false
@@ -12,15 +17,28 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  ARTIFACT_DIR: Artifacts
 
 jobs:
-
   CI:
     runs-on: macos-latest
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      release_version: ${{ steps.version.outputs.release_version }}
+      release_name: ${{ steps.version.outputs.release_name }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+      make_latest: ${{ steps.version.outputs.make_latest }}
+      publish_release: ${{ steps.version.outputs.publish_release }}
 
     steps:
     - uses: actions/checkout@v6.0.3
+      with:
+        fetch-depth: 0
 
     - uses: actions/cache@v5.0.5
       with:
@@ -38,27 +56,77 @@ jobs:
         HOMEBREW_NO_AUTO_UPDATE: 1
 
     - name: Manage Version
-      if: (github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch'
+      id: version
+      env:
+        MANUAL_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_prerelease }}
+        MANUAL_STABLE: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+        HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message || '' }}
       run: |
-        git fetch --prune --unshallow --tags
+        set -euo pipefail
+
+        if [[ "${MANUAL_PRERELEASE}" == "true" && "${MANUAL_STABLE}" == "true" ]]; then
+          echo "::error::Choose either publish_prerelease or publish_release, not both."
+          exit 1
+        fi
+
         GIT_SHA="$(git rev-parse --short HEAD)"
-        CUR_TAG="$(git tag -l | grep -i 'alpha' | tail -1)"
-        eval $(grep -m 1 "MARKETING_VERSION =" HeliPort.xcodeproj/project.pbxproj | tr -d ';' | tr -d '\t' | tr -d " ")
+        MARKETING_VERSION="$(awk -F'= ' '/MARKETING_VERSION =/ {gsub(/[; \t]/, "", $2); print $2; exit}' HeliPort.xcodeproj/project.pbxproj)"
+        ALPHA_ID="${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}.${GIT_SHA}"
+        ALPHA_BUILD=$(( (GITHUB_RUN_NUMBER - 1) % 255 + 1 ))
 
-        if [[ "$GITHUB_EVENT_NAME" != 'workflow_dispatch' || "${{ inputs.publish_release }}" != 'true' ]]; then
-          sed -i '' -e "s/CURRENT_PROJECT_VERSION =.*/CURRENT_PROJECT_VERSION = \"\$(MARKETING_VERSION)-alpha-${GIT_SHA}\";/g" HeliPort.xcodeproj/project.pbxproj
-        else
-          sed -i '' -e "s/CURRENT_PROJECT_VERSION =.*/CURRENT_PROJECT_VERSION = \"\$(MARKETING_VERSION)-stable-${GIT_SHA}\";/g" HeliPort.xcodeproj/project.pbxproj
+        PUBLISH_RELEASE=false
+        IS_PRERELEASE=false
+        MAKE_LATEST=false
+        RELEASE_CHANNEL=development
+        RELEASE_VERSION="${MARKETING_VERSION}+${GIT_SHA}"
+        RELEASE_TAG=""
+        RELEASE_NAME="HeliPort ${RELEASE_VERSION}"
+        BUNDLE_BUILD_VERSION="${MARKETING_VERSION}"
+
+        if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_NAME}" == "master" && "${HEAD_COMMIT_MESSAGE}" != *"Bump version"* ]]; then
+          PUBLISH_RELEASE=true
+          IS_PRERELEASE=true
+          RELEASE_CHANNEL=alpha
+          RELEASE_VERSION="${MARKETING_VERSION}-alpha.${ALPHA_ID}"
+          RELEASE_TAG="v${RELEASE_VERSION}"
+          RELEASE_NAME="HeliPort ${RELEASE_VERSION}"
+          BUNDLE_BUILD_VERSION="${MARKETING_VERSION}a${ALPHA_BUILD}"
+        elif [[ "${MANUAL_PRERELEASE}" == "true" ]]; then
+          PUBLISH_RELEASE=true
+          IS_PRERELEASE=true
+          RELEASE_CHANNEL=alpha
+          RELEASE_VERSION="${MARKETING_VERSION}-alpha.${ALPHA_ID}"
+          RELEASE_TAG="v${RELEASE_VERSION}"
+          RELEASE_NAME="HeliPort ${RELEASE_VERSION}"
+          BUNDLE_BUILD_VERSION="${MARKETING_VERSION}a${ALPHA_BUILD}"
+        elif [[ "${MANUAL_STABLE}" == "true" ]]; then
+          PUBLISH_RELEASE=true
+          MAKE_LATEST=legacy
+          RELEASE_CHANNEL=stable
+          RELEASE_VERSION="${MARKETING_VERSION}"
+          RELEASE_TAG="v${MARKETING_VERSION}"
+          RELEASE_NAME="HeliPort ${MARKETING_VERSION}"
         fi
 
-        echo "VER=$MARKETING_VERSION" >> $GITHUB_ENV
-        echo "SHORT_SHA=$GIT_SHA" >> $GITHUB_ENV
-        if [[ -z $CUR_TAG ]]; then
-          echo "OLD_PRE_TAG=NULL" >> $GITHUB_ENV
-        else
-          echo "OLD_PRE_TAG=$CUR_TAG">> $GITHUB_ENV
-        fi
-      shell: zsh {0}
+        {
+          echo "VER=${MARKETING_VERSION}"
+          echo "SHORT_SHA=${GIT_SHA}"
+          echo "RELEASE_VERSION=${RELEASE_VERSION}"
+          echo "RELEASE_TAG=${RELEASE_TAG}"
+          echo "RELEASE_NAME=${RELEASE_NAME}"
+          echo "RELEASE_CHANNEL=${RELEASE_CHANNEL}"
+          echo "BUNDLE_BUILD_VERSION=${BUNDLE_BUILD_VERSION}"
+        } >> "${GITHUB_ENV}"
+
+        {
+          echo "release_tag=${RELEASE_TAG}"
+          echo "release_version=${RELEASE_VERSION}"
+          echo "release_name=${RELEASE_NAME}"
+          echo "is_prerelease=${IS_PRERELEASE}"
+          echo "make_latest=${MAKE_LATEST}"
+          echo "publish_release=${PUBLISH_RELEASE}"
+        } >> "${GITHUB_OUTPUT}"
+      shell: bash
 
     - name: Lint
       run: swiftlint lint --reporter github-actions-logging
@@ -112,20 +180,30 @@ jobs:
       shell: python
 
     - name: Debug Build
-      if: github.event_name != 'workflow_dispatch' || inputs.publish_release == false
+      if: steps.version.outputs.is_prerelease == 'true' || steps.version.outputs.publish_release == 'false'
       run: |
-        set -o pipefail && xcodebuild ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO -scheme HeliPort -configuration Debug -derivedDataPath build -disableAutomaticPackageResolution CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO | xcbeautify --renderer terminal
+        set -o pipefail && xcodebuild ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO -scheme HeliPort -configuration Debug -derivedDataPath build -disableAutomaticPackageResolution CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO \
+          CURRENT_PROJECT_VERSION="${BUNDLE_BUILD_VERSION}" \
+          OIW_RELEASE_CHANNEL="${RELEASE_CHANNEL}" \
+          OIW_RELEASE_VERSION="${RELEASE_VERSION}" \
+          OIW_BUILD_COMMIT="${SHORT_SHA}" \
+          | xcbeautify --renderer terminal
 
     - name: Release Build
       run: |
-        set -o pipefail && xcodebuild ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO -scheme HeliPort -configuration Release -derivedDataPath build -disableAutomaticPackageResolution CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO | xcbeautify
+        set -o pipefail && xcodebuild ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO -scheme HeliPort -configuration Release -derivedDataPath build -disableAutomaticPackageResolution CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO \
+          CURRENT_PROJECT_VERSION="${BUNDLE_BUILD_VERSION}" \
+          OIW_RELEASE_CHANNEL="${RELEASE_CHANNEL}" \
+          OIW_RELEASE_VERSION="${RELEASE_VERSION}" \
+          OIW_BUILD_COMMIT="${SHORT_SHA}" \
+          | xcbeautify
 
     - name: Create Disk Image
-      if: (github.event_name == 'push' && github.ref_name == 'master') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+      if: steps.version.outputs.publish_release == 'true'
       run: |
         XCBUILD_PATH="build/Build/Products/Release"
-        cp LICENSE $XCBUILD_PATH
-        cd $XCBUILD_PATH
+        cp LICENSE "${XCBUILD_PATH}"
+        cd "${XCBUILD_PATH}"
         curl -sLO https://openintelwireless.github.io/HeliPort/dmg/VolumeIcon.icns
         curl -sLO https://openintelwireless.github.io/HeliPort/dmg/dmg-background.tiff
         create-dmg \
@@ -143,46 +221,40 @@ jobs:
           "HeliPort.dmg" \
           "./HeliPort.app"
         cd -
-        mkdir Artifacts
-        cp -R "${XCBUILD_PATH}"/*.dmg Artifacts
-
-    - name: Setup Prerelease Variables
-      if: github.event_name == 'push' && github.ref_name == 'master'
-      run: |
-        echo "REL_TAG=v${VER}-alpha" >> "$GITHUB_ENV"
-        echo "IS_PRE=true" >> "$GITHUB_ENV"
-
-        {
-          echo '### Disclaimer:'
-          echo '***This alpha version is for testing only.***'
-          echo 'It is not ready for daily use and we do not guarantee its usability.'
-          echo 'If you discovered an issue and you do not have debugging skills, please check with the [Gitter Chat Room](https://gitter.im/OpenIntelWireless/itlwm) in advance before opening an Issue.'
-        } >> ReleaseNotes.md
-
-    - name: Setup Release Variables
-      if: github.event_name == 'workflow_dispatch' && inputs.publish_release
-      run: |
-        echo "REL_TAG=v${VER}" >> "$GITHUB_ENV"
-        echo "IS_PRE=false" >> "$GITHUB_ENV"
+        mkdir -p "${ARTIFACT_DIR}"
+        cp -R "${XCBUILD_PATH}"/*.dmg "${ARTIFACT_DIR}"
 
     - name: Generate Release Notes
-      if: (github.event_name == 'push' && github.ref_name == 'master') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+      if: steps.version.outputs.publish_release == 'true'
       run: |
-        echo '### The latest updates are:' >> ReleaseNotes.md
-        LAST_STABLE_TAG="$(git tag -l | grep -v 'alpha' | tail -1)"
-        LAST_STABLE_COMMIT="$(git rev-list -1 "$LAST_STABLE_TAG")"
-        UPDATE_COUNT="$(git rev-list --count "${LAST_STABLE_COMMIT}..HEAD")"
-        git log -"${UPDATE_COUNT}" --format="- %H %s" | grep -v '.git\|Merge\|yml\|CI' | sed  '/^$/d' >> ReleaseNotes.md
+        {
+          echo "# ${RELEASE_NAME}"
+          echo
+          if [[ "${RELEASE_CHANNEL}" == "alpha" ]]; then
+            echo '### Disclaimer:'
+            echo '***This alpha version is for testing only.***'
+            echo 'It is not ready for daily use and we do not guarantee its usability.'
+            echo 'If you discovered an issue and you do not have debugging skills, please check with the [Gitter Chat Room](https://gitter.im/OpenIntelWireless/itlwm) in advance before opening an Issue.'
+            echo
+          fi
+          echo "Commit: \`${GITHUB_SHA}\`"
+          echo
+          echo '### The latest updates are:'
+        } > ReleaseNotes.md
 
-    - name: Delete Old Prerelease
-      if: ((github.event_name == 'push' && github.ref_name == 'master') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)) && env.OLD_PRE_TAG != 'NULL'
-      run: gh release delete "${OLD_PRE_TAG}" --cleanup-tag -y
-      continue-on-error: true
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        LAST_STABLE_TAG="$(git tag --sort=-version:refname -l 'v[0-9]*' | grep -v -- '-' | head -1 || true)"
+        if [[ -n "${LAST_STABLE_TAG}" ]]; then
+          RANGE="${LAST_STABLE_TAG}..HEAD"
+        else
+          RANGE="HEAD"
+        fi
+
+        git log "${RANGE}" --format="- %H %s" | { grep -v '.git\|Merge\|yml\|CI' || true; } | sed  '/^$/d' >> ReleaseNotes.md
+        cp ReleaseNotes.md "${ARTIFACT_DIR}/ReleaseNotes.md"
+      shell: bash
 
     - name: Generate Sparkle Appcast
-      if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+      if: steps.version.outputs.publish_release == 'true' && steps.version.outputs.is_prerelease == 'false'
       run: |
         REPO_COMMIT_URL='https://github.com/OpenIntelWireless/HeliPort/commit/'
         INDENT='                    '
@@ -191,7 +263,13 @@ jobs:
         PART3="\"><tt>"
         PART4='</tt></a> '
         PART5='</li>'
-        CHANGELOG="$(git log -"$(git rev-list --count $(git rev-list -1 "$(git tag -l | grep -v 'alpha' | tail -1)")..HEAD)" --format="${PART1}%H${PART2}%H${PART3}%h${PART4}%s${PART5}" | cat)"
+        LAST_STABLE_TAG="$(git tag --sort=-version:refname -l 'v[0-9]*' | grep -v -- '-' | head -1 || true)"
+        if [[ -n "${LAST_STABLE_TAG}" ]]; then
+          CHANGELOG_RANGE="${LAST_STABLE_TAG}..HEAD"
+        else
+          CHANGELOG_RANGE="HEAD"
+        fi
+        CHANGELOG="$(git log "${CHANGELOG_RANGE}" --format="${PART1}%H${PART2}%H${PART3}%h${PART4}%s${PART5}" | cat)"
 
         SPARKLE_BIN='./build/SourcePackages/artifacts/sparkle/Sparkle/bin'
         PUBDATE="$(date +"%a, %d %b %Y %T %z")"
@@ -210,7 +288,7 @@ jobs:
             '            ]]>'
             '            </description>'
             '            <sparkle:minimumSystemVersion>10.12</sparkle:minimumSystemVersion>'
-            "            <enclosure url=\"https://github.com/OpenIntelWireless/HeliPort/releases/latest/download/HeliPort.dmg\" sparkle:version=\"${VER}-stable-${SHORT_SHA}\" sparkle:shortVersionString=\"${VER}\" type=\"application/octet-stream\" $($SPARKLE_BIN/sign_update -s ${SPARKLE_KEY} ./Artifacts/HeliPort.dmg)/>"
+            "            <enclosure url=\"https://github.com/OpenIntelWireless/HeliPort/releases/latest/download/HeliPort.dmg\" sparkle:version=\"${BUNDLE_BUILD_VERSION}\" sparkle:shortVersionString=\"${VER}\" type=\"application/octet-stream\" $($SPARKLE_BIN/sign_update -s ${SPARKLE_KEY} ./Artifacts/HeliPort.dmg)/>"
             '        </item>'
             '    </channel>'
             '</rss>'
@@ -223,14 +301,57 @@ jobs:
       env:
         SPARKLE_KEY: ${{ secrets.SPARKLE_KEY }}
 
+    - name: Generate Checksums
+      if: steps.version.outputs.publish_release == 'true'
+      run: |
+        cd "${ARTIFACT_DIR}"
+        shasum -a 256 -- ./* > SHA256SUMS
+
+    - name: Upload Release Artifacts
+      if: steps.version.outputs.publish_release == 'true'
+      uses: actions/upload-artifact@v7.0.1
+      with:
+        name: release-artifacts
+        path: ${{ env.ARTIFACT_DIR }}/*
+        if-no-files-found: error
+        retention-days: 30
+
+  publish:
+    needs: CI
+    if: needs.CI.outputs.publish_release == 'true'
+    runs-on: macos-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+
+    steps:
+    - uses: actions/checkout@v6.0.3
+      with:
+        fetch-depth: 0
+
+    - name: Download Release Artifacts
+      uses: actions/download-artifact@v8.0.1
+      with:
+        name: release-artifacts
+        path: release-artifacts
+
+    - name: Generate Artifact Attestation
+      uses: actions/attest@v4.1.0
+      with:
+        subject-path: release-artifacts/*
+
     - name: Publish GitHub Release
-      if: ((github.event_name == 'push' && github.ref_name == 'master' && contains(github.event.head_commit.message, 'Bump version') == false) || (github.event_name == 'workflow_dispatch' && inputs.publish_release))
       uses: ncipollo/release-action@v1.21.0
       with:
-        allowUpdates: true
-        replacesArtifacts: true
-        prerelease: ${{ env.IS_PRE }}
-        bodyFile: ReleaseNotes.md
-        artifacts: "./Artifacts/*"
-        tag: ${{ env.REL_TAG }}
+        artifactErrorsFailBuild: true
+        immutableCreate: true
+        makeLatest: ${{ needs.CI.outputs.make_latest }}
+        prerelease: ${{ needs.CI.outputs.is_prerelease }}
+        bodyFile: release-artifacts/ReleaseNotes.md
+        artifacts: "release-artifacts/*"
+        tag: ${{ needs.CI.outputs.release_tag }}
+        name: ${{ needs.CI.outputs.release_name }}
+        commit: ${{ github.sha }}
         token: ${{ secrets.GITHUB_TOKEN }}

@@ -30,6 +30,12 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>OIWBuildCommit</key>
+	<string>$(OIW_BUILD_COMMIT)</string>
+	<key>OIWReleaseChannel</key>
+	<string>$(OIW_RELEASE_CHANNEL)</string>
+	<key>OIWReleaseVersion</key>
+	<string>$(OIW_RELEASE_VERSION)</string>
 	<key>NSServices</key>
 	<array>
 		<dict>

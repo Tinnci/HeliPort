@@ -93,6 +93,9 @@ class BugReporter {
     public class func generateBugReport() {
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "Unknown"
         let appBuildVer = Bundle.main.infoDictionary?["CFBundleVersion"] ?? "Unknown"
+        let releaseChannel = Bundle.main.infoDictionary?["OIWReleaseChannel"] as? String ?? "Unknown"
+        let releaseVersion = Bundle.main.infoDictionary?["OIWReleaseVersion"] as? String ?? "Unknown"
+        let buildCommit = Bundle.main.infoDictionary?["OIWBuildCommit"] as? String ?? "Unknown"
 
         let appLog = generateHeliPortLog()
 
@@ -171,6 +174,7 @@ class BugReporter {
 
                         \(dateRan)
                         HeliPort Version: \(appVersion) (Build \(appBuildVer))
+                        HeliPort Release: \(releaseVersion) (\(releaseChannel), commit \(buildCommit))
 
                         macOS \(osVersion)
                         """
