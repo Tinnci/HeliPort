@@ -124,6 +124,21 @@ struct ioctl_tx_power {
     unsigned int version;
 };
 
+enum itl_assoc_failure {
+    ITL_ASSOC_FAIL_NONE = 0,
+    ITL_ASSOC_FAIL_ASSOC_REJECT,
+    ITL_ASSOC_FAIL_DEAUTH,
+    ITL_ASSOC_FAIL_4WAY_TIMEOUT,
+    ITL_ASSOC_FAIL_GROUP_KEY_TIMEOUT,
+    ITL_ASSOC_FAIL_RSN_IE_MISMATCH,
+    ITL_ASSOC_FAIL_BAD_GROUP_CIPHER,
+    ITL_ASSOC_FAIL_BAD_PAIRWISE_CIPHER,
+    ITL_ASSOC_FAIL_BAD_AKMP,
+    ITL_ASSOC_FAIL_RSN_CAPS,
+    ITL_ASSOC_FAIL_MFP_POLICY,
+    ITL_ASSOC_FAIL_EAPOL
+};
+
 enum itl80211_security {
     ITL80211_SECURITY_NONE,
     ITL80211_SECURITY_WEP,
@@ -193,6 +208,32 @@ struct ioctl_network_info {
     u_int16_t               ni_rsncaps;
     enum itl80211_cipher    ni_rsncipher;
     uint32_t                recv_timestamp;
+};
+
+struct ioctl_assoc_status {
+    unsigned int version;
+    enum itl_assoc_failure failure;
+    int state; //itl_80211_state
+    u_int16_t deauth_reason;
+    u_int16_t assoc_status;
+    unsigned int advertised_rsnprotos;
+    unsigned int selected_rsnprotos;
+    unsigned int advertised_rsnakms;
+    unsigned int selected_rsnakms;
+    unsigned int selected_rsnciphers;
+    enum itl80211_cipher selected_rsncipher;
+    enum itl80211_cipher rsn_groupcipher;
+    enum itl80211_cipher rsn_groupmgmtcipher;
+    u_int16_t advertised_rsncaps;
+    u_int16_t selected_rsncaps;
+    unsigned int eapol_msg1_rx;
+    unsigned int eapol_msg2_tx;
+    unsigned int eapol_msg3_rx;
+    unsigned int eapol_msg4_tx;
+    unsigned int pmf_negotiated;
+    unsigned int ssid_len;
+    unsigned char ssid[NWID_LEN];
+    uint8_t bssid[ETHER_ADDR_LEN];
 };
 
 #endif /* Common_h */

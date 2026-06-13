@@ -5,15 +5,18 @@ on:
   - pull_request
   - workflow_dispatch
 
+permissions:
+  contents: write
+
 jobs:
 
   CI:
     runs-on: macos-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6.0.3
 
-    - uses: actions/cache@v4
+    - uses: actions/cache@v5.0.5
       with:
         path: build/SourcePackages
         key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved') }}
@@ -135,37 +138,42 @@ jobs:
           "./HeliPort.app"
         cd -
         mkdir Artifacts
-        cp -R ${XCBUILD_PATH}/*.dmg Artifacts
+        cp -R "${XCBUILD_PATH}"/*.dmg Artifacts
 
     - name: Setup Prerelease Variables
       if: github.event_name == 'push' && github.ref_name == 'master'
       run: |
-        echo "REL_TAG=v${VER}-alpha" >> $GITHUB_ENV
-        echo "IS_PRE=true" >> $GITHUB_ENV
+        echo "REL_TAG=v${VER}-alpha" >> "$GITHUB_ENV"
+        echo "IS_PRE=true" >> "$GITHUB_ENV"
 
-        echo '### Disclaimer:' >> ReleaseNotes.md
-        echo '***This alpha version is for testing only.***' >> ReleaseNotes.md
-        echo 'It is not ready for daily use and we do not guarantee its usability.' >> ReleaseNotes.md
-        echo 'If you discovered an issue and you do not have debugging skills, please check with the [Gitter Chat Room](https://gitter.im/OpenIntelWireless/itlwm) in advance before opening an Issue.' >> ReleaseNotes.md
+        {
+          echo '### Disclaimer:'
+          echo '***This alpha version is for testing only.***'
+          echo 'It is not ready for daily use and we do not guarantee its usability.'
+          echo 'If you discovered an issue and you do not have debugging skills, please check with the [Gitter Chat Room](https://gitter.im/OpenIntelWireless/itlwm) in advance before opening an Issue.'
+        } >> ReleaseNotes.md
 
     - name: Setup Release Variables
       if: github.event_name == 'workflow_dispatch'
       run: |
-        echo "REL_TAG=v${VER}" >> $GITHUB_ENV
-        echo "IS_PRE=false" >> $GITHUB_ENV
+        echo "REL_TAG=v${VER}" >> "$GITHUB_ENV"
+        echo "IS_PRE=false" >> "$GITHUB_ENV"
 
     - name: Generate Release Notes
       if: (github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch'
       run: |
         echo '### The latest updates are:' >> ReleaseNotes.md
-        git log -"$(git rev-list --count $(git rev-list -1 "$(git tag -l | grep -v 'alpha' | tail -1)")..HEAD)" --format="- %H %s" | grep -v '.git\|Merge\|yml\|CI' | sed  '/^$/d' >> ReleaseNotes.md
+        LAST_STABLE_TAG="$(git tag -l | grep -v 'alpha' | tail -1)"
+        LAST_STABLE_COMMIT="$(git rev-list -1 "$LAST_STABLE_TAG")"
+        UPDATE_COUNT="$(git rev-list --count "${LAST_STABLE_COMMIT}..HEAD")"
+        git log -"${UPDATE_COUNT}" --format="- %H %s" | grep -v '.git\|Merge\|yml\|CI' | sed  '/^$/d' >> ReleaseNotes.md
 
     - name: Delete Old Prerelease
-      if: (github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch'
-      run: gh release delete ${{ env.OLD_PRE_TAG }} --cleanup-tag
+      if: ((github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch') && env.OLD_PRE_TAG != 'NULL'
+      run: gh release delete "${OLD_PRE_TAG}" --cleanup-tag -y
       continue-on-error: true
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Generate Sparkle Appcast
       if: github.event_name == 'workflow_dispatch'
@@ -210,8 +218,8 @@ jobs:
         SPARKLE_KEY: ${{ secrets.SPARKLE_KEY }}
 
     - name: Publish GitHub Release
-      if: ((github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch') && contains(github.event.head_commit.message, 'Bump version') == false
-      uses: ncipollo/release-action@v1
+      if: ((github.event_name == 'push' && github.ref_name == 'master' && contains(github.event.head_commit.message, 'Bump version') == false) || github.event_name == 'workflow_dispatch')
+      uses: ncipollo/release-action@v1.21.0
       with:
         allowUpdates: true
         replacesArtifacts: true

@@ -56,6 +56,8 @@ bool get_power_state(bool *enabled);
 
 bool get_80211_state(uint32_t *state);
 
+bool get_assoc_status(struct ioctl_assoc_status *status);
+
 bool get_network_ssid(char *ssid);
 
 bool get_network_bssid(char *bssid);

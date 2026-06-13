@@ -65,6 +65,17 @@ error:
     return false;
 }
 
+bool get_assoc_status(struct ioctl_assoc_status *status) {
+    if (ioctl_get(IOCTL_80211_ASSOC_STATUS, status, sizeof(struct ioctl_assoc_status)) != KERN_SUCCESS) {
+        goto error;
+    }
+
+    return true;
+
+error:
+    return false;
+}
+
 bool get_network_ssid(char *ssid)
 {
     struct ioctl_nw_id nwid;

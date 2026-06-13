@@ -156,6 +156,9 @@ final class StatusMenuModern: StatusMenuBase, StatusMenuItems {
 
         _ = addNetworkItem(currentNetworkItem)
 
+        lastAssociationFailureItem.view = KeyValueMenuItemView(key: lastAssociationFailureItem.title, inset: .standard)
+        addItem(lastAssociationFailureItem)
+
         stationInfoItems.forEach {
             $0.view = KeyValueMenuItemView(key: $0.title, inset: .staInfo)
             addItem($0)

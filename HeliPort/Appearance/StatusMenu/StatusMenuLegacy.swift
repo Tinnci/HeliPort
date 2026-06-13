@@ -125,6 +125,7 @@ final class StatusMenuLegacy: StatusMenuBase, StatusMenuItems {
         addItem(NSMenuItem.separator())
 
         _ = addNetworkItem(currentNetworkItem)
+        addKeyValueItem(lastAssociationFailureItem)
 
         addItem(disconnectItem)
         disconnectItem.target = self

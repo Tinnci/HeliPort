@@ -142,6 +142,11 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
     let hardwareInfoSeparator = NSMenuItem.separator()
 
     let networkItemListSeparator = NSMenuItem.separator()
+    let lastAssociationFailureItem: HPMenuItem = {
+        let item = HPMenuItem(title: .lastWiFiFailure)
+        item.isHidden = true
+        return item
+    }()
 
     let aboutItem = HPMenuItem(title: .aboutHeliport)
     let checkUpdateItem = {
@@ -388,6 +393,7 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
             DispatchQueue.main.async {
                 self.setCurrentNetworkItem(with: info)
                 self.setStationItems(with: info)
+                self.updateLastAssociationFailureItem()
             }
         }
     }
@@ -485,6 +491,13 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
         }
     }
 
+    func updateLastAssociationFailureItem() {
+        guard let items = self as? StatusMenuItems else { return }
+        let failure = NetworkManager.lastAssociationFailure
+        lastAssociationFailureItem.isHidden = isNetworkConnected || failure == nil
+        items.setValueForItem(lastAssociationFailureItem, value: failure ?? "")
+    }
+
     func processNetworkList(from infoList: [NetworkInfo], to itemList: inout [NSMenuItem],
                             insertAt: Int, _ staInfo: NetworkInfo?, hidden: Bool = false) {
         var index = 0
@@ -554,6 +567,7 @@ private extension String {
     static let reachable = NSLocalizedString("Reachable")
     static let unreachable = NSLocalizedString("Unreachable")
     static let securityStr = NSLocalizedString("    Security: ")
+    static let lastWiFiFailure = NSLocalizedString("Last Wi-Fi Failure: ")
     static let bssidStr = NSLocalizedString("    BSSID: ")
     static let channelStr = NSLocalizedString("    Channel: ")
     static let countryCodeStr = NSLocalizedString("    Country Code: ")

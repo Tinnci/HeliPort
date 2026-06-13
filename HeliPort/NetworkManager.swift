@@ -26,6 +26,13 @@ final class NetworkManager {
         ITL80211_SECURITY_PERSONAL
     ]
 
+    private static let associationFailureQueue = DispatchQueue(label: "heliport.associationFailure")
+    private static var associationFailureSummary: String?
+
+    static var lastAssociationFailure: String? {
+        associationFailureQueue.sync { associationFailureSummary }
+    }
+
     static func connect(networkInfo: NetworkInfo, saveNetwork: Bool = false,
                         _ callback: ((_ result: Bool) -> Void)? = nil) {
 
@@ -42,11 +49,15 @@ final class NetworkManager {
                 let result = connect_network(networkInfo.ssid, auth.password)
                 DispatchQueue.main.async {
                     if result {
+                        clearAssociationFailure()
                         if savePassword {
                             CredentialsManager.instance.save(networkInfo)
                         }
                     } else {
-                        Log.error("Failed to connect to: \(networkInfo.ssid)")
+                        let failure = refreshAssociationFailure()
+                        StatusBarIcon.shared().warning()
+                        Log.error("Failed to connect to: \(networkInfo.ssid)" +
+                                  (failure.map { " (\($0))" } ?? ""))
                     }
                     callback?(result)
                 }
@@ -74,6 +85,24 @@ final class NetworkManager {
                                  networkInfo: networkInfo,
                                  getAuthInfoCallback: getAuthInfoCallback).show()
             }
+        }
+    }
+
+    @discardableResult
+    static func refreshAssociationFailure() -> String? {
+        var status = ioctl_assoc_status()
+        guard get_assoc_status(&status) else { return lastAssociationFailure }
+
+        let summary = associationFailureDescription(status)
+        associationFailureQueue.sync {
+            associationFailureSummary = summary
+        }
+        return summary
+    }
+
+    static func clearAssociationFailure() {
+        associationFailureQueue.sync {
+            associationFailureSummary = nil
         }
     }
 
@@ -413,5 +442,95 @@ final class NetworkManager {
         }
 
         return nil
+    }
+
+    private static func associationFailureDescription(_ status: ioctl_assoc_status) -> String? {
+        let hasFailure = status.failure != ITL_ASSOC_FAIL_NONE ||
+            status.deauth_reason != 0 && status.deauth_reason != 1 ||
+            status.assoc_status != UInt16.max
+        guard hasFailure else { return nil }
+
+        var parts = [failureDescription(status.failure)]
+        let ssid = String(ssid: status.ssid)
+        if !ssid.isEmpty {
+            parts.append(ssid)
+        }
+        if status.advertised_rsnakms != 0 || status.selected_rsnakms != 0 {
+            parts.append("AKM \(akmDescription(status.advertised_rsnakms)) -> " +
+                         akmDescription(status.selected_rsnakms))
+        }
+        if status.advertised_rsncaps != 0 {
+            parts.append(pmfDescription(status.advertised_rsncaps))
+        }
+        if status.eapol_msg1_rx != 0 || status.eapol_msg2_tx != 0 ||
+            status.eapol_msg3_rx != 0 || status.eapol_msg4_tx != 0 {
+            parts.append("EAPOL \(status.eapol_msg1_rx)/\(status.eapol_msg2_tx)/" +
+                         "\(status.eapol_msg3_rx)/\(status.eapol_msg4_tx)")
+        }
+        if status.deauth_reason != 0 && status.deauth_reason != 1 {
+            parts.append("deauth \(status.deauth_reason)")
+        }
+        if status.assoc_status != UInt16.max && status.assoc_status != 0 {
+            parts.append("assoc status \(status.assoc_status)")
+        }
+        return parts.joined(separator: "; ")
+    }
+
+    private static func failureDescription(_ failure: itl_assoc_failure) -> String {
+        switch failure {
+        case ITL_ASSOC_FAIL_ASSOC_REJECT:
+            return "association rejected"
+        case ITL_ASSOC_FAIL_DEAUTH:
+            return "deauthenticated"
+        case ITL_ASSOC_FAIL_4WAY_TIMEOUT:
+            return "4-way handshake timeout"
+        case ITL_ASSOC_FAIL_GROUP_KEY_TIMEOUT:
+            return "group key handshake timeout"
+        case ITL_ASSOC_FAIL_RSN_IE_MISMATCH:
+            return "RSN IE mismatch"
+        case ITL_ASSOC_FAIL_BAD_GROUP_CIPHER:
+            return "bad group cipher"
+        case ITL_ASSOC_FAIL_BAD_PAIRWISE_CIPHER:
+            return "bad pairwise cipher"
+        case ITL_ASSOC_FAIL_BAD_AKMP:
+            return "bad AKM"
+        case ITL_ASSOC_FAIL_RSN_CAPS:
+            return "RSN capabilities mismatch"
+        case ITL_ASSOC_FAIL_MFP_POLICY:
+            return "PMF policy mismatch"
+        case ITL_ASSOC_FAIL_EAPOL:
+            return "EAPOL key processing failed"
+        default:
+            return "association failed"
+        }
+    }
+
+    private static func akmDescription(_ akms: UInt32) -> String {
+        var names = [String]()
+        if akms & ITL80211_AKM_PSK.rawValue != 0 {
+            names.append("PSK")
+        }
+        if akms & ITL80211_AKM_SHA256_PSK.rawValue != 0 {
+            names.append("SHA256_PSK")
+        }
+        if akms & ITL80211_AKM_8021X.rawValue != 0 {
+            names.append("802.1X")
+        }
+        if akms & ITL80211_AKM_SHA256_8021X.rawValue != 0 {
+            names.append("SHA256_8021X")
+        }
+        return names.isEmpty ? "none" : names.joined(separator: "+")
+    }
+
+    private static func pmfDescription(_ rsnCaps: UInt16) -> String {
+        let mfpr = (rsnCaps & 0x0040) != 0
+        let mfpc = (rsnCaps & 0x0080) != 0
+        if mfpr {
+            return "PMF required"
+        }
+        if mfpc {
+            return "PMF capable"
+        }
+        return "PMF disabled"
     }
 }
