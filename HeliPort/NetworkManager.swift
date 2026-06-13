@@ -334,35 +334,43 @@ final class NetworkManager {
     }
 
     static func getSecurityType(_ info: ioctl_network_info) -> itl80211_security {
-        if info.supported_rsnprotos & ITL80211_PROTO_RSN.rawValue != 0 {
+        return getSecurityType(rsnprotos: info.supported_rsnprotos, rsnakms: info.rsn_akms)
+    }
+
+    static func getSecurityType(_ status: ioctl_assoc_status) -> itl80211_security {
+        return getSecurityType(rsnprotos: status.selected_rsnprotos, rsnakms: status.selected_rsnakms)
+    }
+
+    private static func getSecurityType(rsnprotos: UInt32, rsnakms: UInt32) -> itl80211_security {
+        if rsnprotos & ITL80211_PROTO_RSN.rawValue != 0 {
             // WPA2
-            if info.rsn_akms & ITL80211_AKM_8021X.rawValue != 0 {
-                if info.supported_rsnprotos & ITL80211_PROTO_WPA.rawValue != 0 {
+            if rsnakms & ITL80211_AKM_8021X.rawValue != 0 {
+                if rsnprotos & ITL80211_PROTO_WPA.rawValue != 0 {
                     return ITL80211_SECURITY_WPA_ENTERPRISE_MIXED
                 }
                 return ITL80211_SECURITY_WPA2_ENTERPRISE
-            } else if info.rsn_akms & ITL80211_AKM_PSK.rawValue != 0 {
-                if info.supported_rsnprotos & ITL80211_PROTO_WPA.rawValue != 0 {
+            } else if rsnakms & ITL80211_AKM_PSK.rawValue != 0 {
+                if rsnprotos & ITL80211_PROTO_WPA.rawValue != 0 {
                     return ITL80211_SECURITY_WPA_PERSONAL_MIXED
                 }
                 return ITL80211_SECURITY_WPA2_PERSONAL
-            } else if info.rsn_akms & ITL80211_AKM_SHA256_8021X.rawValue != 0 {
+            } else if rsnakms & ITL80211_AKM_SHA256_8021X.rawValue != 0 {
                 return ITL80211_SECURITY_WPA2_ENTERPRISE
-            } else if info.rsn_akms & ITL80211_AKM_SHA256_PSK.rawValue != 0 {
+            } else if rsnakms & ITL80211_AKM_SHA256_PSK.rawValue != 0 {
                 return ITL80211_SECURITY_PERSONAL
             }
-        } else if info.supported_rsnprotos & ITL80211_PROTO_WPA.rawValue != 0 {
+        } else if rsnprotos & ITL80211_PROTO_WPA.rawValue != 0 {
             // WPA
-            if info.rsn_akms & ITL80211_AKM_8021X.rawValue != 0 {
+            if rsnakms & ITL80211_AKM_8021X.rawValue != 0 {
                 return ITL80211_SECURITY_WPA_ENTERPRISE
-            } else if info.rsn_akms & ITL80211_AKM_PSK.rawValue != 0 {
+            } else if rsnakms & ITL80211_AKM_PSK.rawValue != 0 {
                 return ITL80211_SECURITY_WPA_PERSONAL
-            } else if info.rsn_akms & ITL80211_AKM_SHA256_8021X.rawValue != 0 {
+            } else if rsnakms & ITL80211_AKM_SHA256_8021X.rawValue != 0 {
                 return ITL80211_SECURITY_WPA_ENTERPRISE
-            } else if info.rsn_akms & ITL80211_AKM_SHA256_PSK.rawValue != 0 {
+            } else if rsnakms & ITL80211_AKM_SHA256_PSK.rawValue != 0 {
                 return ITL80211_SECURITY_ENTERPRISE
             }
-        } else if info.supported_rsnprotos == 0 {
+        } else if rsnprotos == 0 {
             return ITL80211_SECURITY_NONE
         }
         return ITL80211_SECURITY_UNKNOWN

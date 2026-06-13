@@ -389,6 +389,7 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
         var routerAddr: String = .unavailable
         var internet: String = .unavailable
         var security: String = .unavailable
+        var securityMode: itl80211_security = ITL80211_SECURITY_NONE
         var bssid: String = .unavailable
         var channel: String = .unavailable
         var countryCode: String = .unavailable
@@ -427,6 +428,11 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
             infoOut.isNetworkConnected = true
             infoOut.ssid = String(ssid: infoIn.ssid)
             infoOut.rssiValue = Int(infoIn.rssi)
+
+            var assocStatus = ioctl_assoc_status()
+            if get_assoc_status(&assocStatus) {
+                infoOut.securityMode = NetworkManager.getSecurityType(assocStatus)
+            }
 
             guard showAllOptions else { return infoOut }
 
@@ -502,10 +508,15 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
 
         isNetworkListEmpty = false
         if let staSSID = info.ssid, wifiItemView.networkInfo.ssid != staSSID {
-            wifiItemView.networkInfo = NetworkInfo(ssid: staSSID, rssi: info.rssiValue)
+            var networkInfo = NetworkInfo(ssid: staSSID, rssi: info.rssiValue)
+            networkInfo.auth.security = info.securityMode
+            wifiItemView.networkInfo = networkInfo
         } else {
             var networkInfo = wifiItemView.networkInfo
             networkInfo.rssi = info.rssiValue
+            if networkInfo.auth.security == ITL80211_SECURITY_NONE {
+                networkInfo.auth.security = info.securityMode
+            }
             wifiItemView.networkInfo = networkInfo
             wifiItemView.updateImages()
         }
