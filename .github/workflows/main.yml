@@ -1,4 +1,6 @@
-name: CI
+name: HeliPort CI/CD
+
+run-name: HeliPort CI/CD - ${{ github.event_name }} - ${{ github.ref_name }}
 
 on:
   push:
@@ -23,7 +25,8 @@ env:
   ARTIFACT_DIR: Artifacts
 
 jobs:
-  CI:
+  validate_package:
+    name: Validate, Package, and Checksum
     runs-on: macos-latest
     permissions:
       contents: read
@@ -55,7 +58,7 @@ jobs:
         HOMEBREW_NO_INSTALL_CLEANUP: 1
         HOMEBREW_NO_AUTO_UPDATE: 1
 
-    - name: Manage Version
+    - name: Resolve Version and Release Mode
       id: version
       env:
         MANUAL_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_prerelease }}
@@ -82,8 +85,13 @@ jobs:
         RELEASE_TAG=""
         RELEASE_NAME="HeliPort ${RELEASE_VERSION}"
         BUNDLE_BUILD_VERSION="${MARKETING_VERSION}"
+        SKIP_RELEASE=false
 
-        if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_NAME}" == "master" && "${HEAD_COMMIT_MESSAGE}" != *"Bump version"* ]]; then
+        if [[ "${HEAD_COMMIT_MESSAGE}" == *"[skip release]"* || "${HEAD_COMMIT_MESSAGE}" == *"[release skip]"* || "${HEAD_COMMIT_MESSAGE}" == *"[ci-only]"* ]]; then
+          SKIP_RELEASE=true
+        fi
+
+        if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_NAME}" == "master" && "${HEAD_COMMIT_MESSAGE}" != *"Bump version"* && "${SKIP_RELEASE}" == "false" ]]; then
           PUBLISH_RELEASE=true
           IS_PRERELEASE=true
           RELEASE_CHANNEL=alpha
@@ -128,10 +136,10 @@ jobs:
         } >> "${GITHUB_OUTPUT}"
       shell: bash
 
-    - name: Lint
+    - name: Lint Swift Sources
       run: swiftlint lint --reporter github-actions-logging
 
-    - name: i18n Stats
+    - name: Report Localization Coverage
       run: |
         import os, sys, json
         from pycountry import languages
@@ -179,7 +187,7 @@ jobs:
 
       shell: python
 
-    - name: Debug Build
+    - name: Build Debug App
       if: steps.version.outputs.is_prerelease == 'true' || steps.version.outputs.publish_release == 'false'
       run: |
         set -o pipefail && xcodebuild ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO -scheme HeliPort -configuration Debug -derivedDataPath build -disableAutomaticPackageResolution CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO \
@@ -189,7 +197,7 @@ jobs:
           OIW_BUILD_COMMIT="${SHORT_SHA}" \
           | xcbeautify --renderer terminal
 
-    - name: Release Build
+    - name: Build Release App
       run: |
         set -o pipefail && xcodebuild ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO -scheme HeliPort -configuration Release -derivedDataPath build -disableAutomaticPackageResolution CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO \
           CURRENT_PROJECT_VERSION="${BUNDLE_BUILD_VERSION}" \
@@ -198,7 +206,7 @@ jobs:
           OIW_BUILD_COMMIT="${SHORT_SHA}" \
           | xcbeautify
 
-    - name: Create Disk Image
+    - name: Package DMG
       if: steps.version.outputs.publish_release == 'true'
       run: |
         XCBUILD_PATH="build/Build/Products/Release"
@@ -224,7 +232,7 @@ jobs:
         mkdir -p "${ARTIFACT_DIR}"
         cp -R "${XCBUILD_PATH}"/*.dmg "${ARTIFACT_DIR}"
 
-    - name: Generate Release Notes
+    - name: Write Release Notes
       if: steps.version.outputs.publish_release == 'true'
       run: |
         {
@@ -253,7 +261,7 @@ jobs:
         cp ReleaseNotes.md "${ARTIFACT_DIR}/ReleaseNotes.md"
       shell: bash
 
-    - name: Generate Sparkle Appcast
+    - name: Generate Stable Sparkle Appcast
       if: steps.version.outputs.publish_release == 'true' && steps.version.outputs.is_prerelease == 'false'
       run: |
         REPO_COMMIT_URL='https://github.com/OpenIntelWireless/HeliPort/commit/'
@@ -301,13 +309,13 @@ jobs:
       env:
         SPARKLE_KEY: ${{ secrets.SPARKLE_KEY }}
 
-    - name: Generate Checksums
+    - name: Generate SHA256 Checksums
       if: steps.version.outputs.publish_release == 'true'
       run: |
         cd "${ARTIFACT_DIR}"
         shasum -a 256 -- ./* > SHA256SUMS
 
-    - name: Upload Release Artifacts
+    - name: Upload Packaged Artifacts
       if: steps.version.outputs.publish_release == 'true'
       uses: actions/upload-artifact@v7.0.1
       with:
@@ -316,9 +324,10 @@ jobs:
         if-no-files-found: error
         retention-days: 30
 
-  publish:
-    needs: CI
-    if: needs.CI.outputs.publish_release == 'true'
+  publish_release:
+    name: Publish GitHub Release
+    needs: validate_package
+    if: needs.validate_package.outputs.publish_release == 'true'
     runs-on: macos-latest
     permissions:
       contents: write
@@ -331,13 +340,13 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Download Release Artifacts
+    - name: Download Packaged Artifacts
       uses: actions/download-artifact@v8.0.1
       with:
         name: release-artifacts
         path: release-artifacts
 
-    - name: Generate Artifact Attestation
+    - name: Attest Release Artifacts
       uses: actions/attest@v4.1.0
       with:
         subject-path: release-artifacts/*
@@ -347,11 +356,11 @@ jobs:
       with:
         artifactErrorsFailBuild: true
         immutableCreate: true
-        makeLatest: ${{ needs.CI.outputs.make_latest }}
-        prerelease: ${{ needs.CI.outputs.is_prerelease }}
+        makeLatest: ${{ needs.validate_package.outputs.make_latest }}
+        prerelease: ${{ needs.validate_package.outputs.is_prerelease }}
         bodyFile: release-artifacts/ReleaseNotes.md
         artifacts: "release-artifacts/*"
-        tag: ${{ needs.CI.outputs.release_tag }}
-        name: ${{ needs.CI.outputs.release_name }}
+        tag: ${{ needs.validate_package.outputs.release_tag }}
+        name: ${{ needs.validate_package.outputs.release_name }}
         commit: ${{ github.sha }}
         token: ${{ secrets.GITHUB_TOKEN }}
