@@ -96,11 +96,17 @@ jobs:
         MANUAL_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_prerelease }}
         MANUAL_STABLE: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
         HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message || '' }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       run: |
         set -euo pipefail
 
         if [[ "${MANUAL_PRERELEASE}" == "true" && "${MANUAL_STABLE}" == "true" ]]; then
           echo "::error::Choose either publish_prerelease or publish_release, not both."
+          exit 1
+        fi
+
+        if [[ "${MANUAL_STABLE}" == "true" && "${GITHUB_REF_NAME}" != "${DEFAULT_BRANCH}" ]]; then
+          echo "::error::Stable releases must be dispatched from ${DEFAULT_BRANCH}; current ref is ${GITHUB_REF_NAME}."
           exit 1
         fi
 
@@ -166,6 +172,21 @@ jobs:
           echo "make_latest=${MAKE_LATEST}"
           echo "publish_release=${PUBLISH_RELEASE}"
         } >> "${GITHUB_OUTPUT}"
+
+        {
+          echo "## Release Mode"
+          echo
+          echo "| Field | Value |"
+          echo "| :-- | :-- |"
+          echo "| Ref | \`${GITHUB_REF_NAME}\` |"
+          echo "| Default branch | \`${DEFAULT_BRANCH}\` |"
+          echo "| Channel | \`${RELEASE_CHANNEL}\` |"
+          echo "| Publish release | \`${PUBLISH_RELEASE}\` |"
+          echo "| Prerelease | \`${IS_PRERELEASE}\` |"
+          echo "| Tag | \`${RELEASE_TAG:-none}\` |"
+          echo "| Version | \`${RELEASE_VERSION}\` |"
+          echo "| Bundle build | \`${BUNDLE_BUILD_VERSION}\` |"
+        } >> "${GITHUB_STEP_SUMMARY}"
       shell: bash
 
     - name: Lint Swift Sources
