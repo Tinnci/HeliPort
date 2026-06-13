@@ -19,18 +19,44 @@
 
 static pthread_mutex_t* api_mutex = NULL;
 
+static void copy_bounded_c_string(char *dst, size_t dst_size, const char *src, size_t src_size) {
+    if (dst_size == 0) {
+        return;
+    }
+
+    size_t len = strnlen(src, src_size);
+    if (len >= dst_size) {
+        len = dst_size - 1;
+    }
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+}
+
 bool get_platform_info(platform_info_t *info) {
     memset(info, 0, sizeof(platform_info_t));
 
     struct ioctl_driver_info driver_info;
+    memset(&driver_info, 0, sizeof(driver_info));
     if (ioctl_get(IOCTL_80211_DRIVER_INFO, &driver_info, sizeof(struct ioctl_driver_info)) != KERN_SUCCESS) {
         goto error;
     }
 
-    strcpy(info->device_info_str, driver_info.bsd_name);
-    strcpy(info->driver_info_str, driver_info.driver_version);
-    strcat(info->driver_info_str, " ");
-    strcat(info->driver_info_str, driver_info.fw_version);
+    char driver_version[sizeof(driver_info.driver_version) + 1];
+    char firmware_version[sizeof(driver_info.fw_version) + 1];
+    copy_bounded_c_string(info->device_info_str, sizeof(info->device_info_str),
+                          driver_info.bsd_name, sizeof(driver_info.bsd_name));
+    copy_bounded_c_string(driver_version, sizeof(driver_version),
+                          driver_info.driver_version, sizeof(driver_info.driver_version));
+    copy_bounded_c_string(firmware_version, sizeof(firmware_version),
+                          driver_info.fw_version, sizeof(driver_info.fw_version));
+
+    if (firmware_version[0] == '\0') {
+        copy_bounded_c_string(info->driver_info_str, sizeof(info->driver_info_str),
+                              driver_version, sizeof(driver_version));
+    } else {
+        snprintf(info->driver_info_str, sizeof(info->driver_info_str), "%s %s",
+                 driver_version, firmware_version);
+    }
     return true;
 
 error:

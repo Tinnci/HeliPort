@@ -28,7 +28,7 @@
 
 typedef struct {
     char device_info_str[32];
-    char driver_info_str[32];
+    char driver_info_str[96];
 } platform_info_t;
 
 typedef struct {

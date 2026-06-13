@@ -30,7 +30,15 @@ public extension String {
 
     init<T>(cCharArray: T) {
         self = withUnsafeBytes(of: cCharArray) {
-            $0.withMemoryRebound(to: CChar.self) { String(cString: $0.baseAddress!)}
+            let bytes = Array($0.prefix { $0 != 0 })
+            if let string = String(bytes: bytes, encoding: .utf8) {
+                return string
+            }
+
+            let printableASCII = bytes.filter { byte in
+                byte >= 0x20 && byte < 0x7f
+            }
+            return String(bytes: printableASCII, encoding: .utf8) ?? ""
         }
     }
 }
