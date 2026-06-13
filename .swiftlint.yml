@@ -1,10 +1,17 @@
+included:
+- HeliPort
+- HeliPort Launcher
+
 excluded:
 - SourcePackages
-- build # Alternative derived path used in CI
+- build
+- build-*
+- .build
+- DerivedData
 
 identifier_name:
   allowed_symbols: "_"
-    
+
 large_tuple:
   warning: 3
 
