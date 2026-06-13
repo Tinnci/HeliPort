@@ -52,8 +52,7 @@ jobs:
 
     - name: Install Dependencies
       run: |
-        brew install create-dmg swiftlint
-        python -m pip install pycountry
+        brew install create-dmg swiftlint uv
       env:
         HOMEBREW_NO_INSTALL_CLEANUP: 1
         HOMEBREW_NO_AUTO_UPDATE: 1
@@ -141,6 +140,7 @@ jobs:
 
     - name: Report Localization Coverage
       run: |
+        uv run --with pycountry python <<'PY'
         import os, sys, json
         from pycountry import languages
         from collections import defaultdict
@@ -184,8 +184,9 @@ jobs:
         except Exception as e:
             print(f"::error::{str(e)}")
             sys.exit(1)
+        PY
 
-      shell: python
+      shell: bash
 
     - name: Build Debug App
       if: steps.version.outputs.is_prerelease == 'true' || steps.version.outputs.publish_release == 'false'
