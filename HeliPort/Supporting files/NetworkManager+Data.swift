@@ -15,7 +15,7 @@
 
 import Foundation
 
-final class NetworkInfo: Codable {
+struct NetworkInfo: Codable, Hashable, Sendable {
     let ssid: String
     var rssi: Int
 
@@ -25,9 +25,7 @@ final class NetworkInfo: Codable {
         self.ssid = ssid
         self.rssi = rssi
     }
-}
 
-extension NetworkInfo: Hashable {
     static func == (lhs: NetworkInfo, rhs: NetworkInfo) -> Bool {
         return lhs.ssid == rhs.ssid
     }
@@ -37,7 +35,7 @@ extension NetworkInfo: Hashable {
     }
 }
 
-final class NetworkAuth: Codable {
+struct NetworkAuth: Codable, Sendable {
     var security: itl80211_security = ITL80211_SECURITY_NONE
     var option: UInt64 = 0
     var identity = [UInt8]()
@@ -45,7 +43,7 @@ final class NetworkAuth: Codable {
     var password: String = ""
 }
 
-final class NetworkInfoStorageEntity: Codable {
+struct NetworkInfoStorageEntity: Codable, Sendable {
     static let CURRENT_VERSION: UInt = 2
 
     var version: UInt = CURRENT_VERSION
