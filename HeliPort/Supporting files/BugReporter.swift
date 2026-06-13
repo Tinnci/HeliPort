@@ -17,7 +17,8 @@ import Cocoa
 import OSLog
 import IOKit
 
-class BugReporter {
+@MainActor
+final class BugReporter {
 
     private static let openPanel: NSOpenPanel = {
         let openPanel = NSOpenPanel()
@@ -35,7 +36,7 @@ class BugReporter {
         return openPanel
     }()
 
-    private class func generateHeliPortLog() -> String {
+    nonisolated private static func generateHeliPortLog() -> String {
 
         // MARK: HeliPort log
 
@@ -72,7 +73,7 @@ class BugReporter {
         }
     }
 
-    private class func generateItlwmLog() -> String {
+    nonisolated private static func generateItlwmLog() -> String {
         var response: String?
 
         if KextInfo("as.lvs1974.DebugEnhancer").kextDidLoad() {
@@ -90,27 +91,27 @@ class BugReporter {
         return response ?? .scriptFailed
     }
 
-    public class func generateBugReport() {
+    public static func generateBugReport() async {
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "Unknown"
         let appBuildVer = Bundle.main.infoDictionary?["CFBundleVersion"] ?? "Unknown"
         let releaseChannel = Bundle.main.infoDictionary?["OIWReleaseChannel"] as? String ?? "Unknown"
         let releaseVersion = Bundle.main.infoDictionary?["OIWReleaseVersion"] as? String ?? "Unknown"
         let buildCommit = Bundle.main.infoDictionary?["OIWBuildCommit"] as? String ?? "Unknown"
 
-        let appLog = generateHeliPortLog()
+        let appLog = await Task.detached(priority: .background) {
+            return generateHeliPortLog()
+        }.value
 
         if appLog == .heliportCouldNotGetLogs || appLog == .scriptFailed {
-            DispatchQueue.main.async {
-                let alert = CriticalAlert(
-                    message: NSLocalizedString("Error occurred while generating bug report."),
-                    informativeText: appLog == .heliportCouldNotGetLogs ?
-                    NSLocalizedString("Could not generate report for HeliPort.") :
-                    NSLocalizedString("Command failed to fetch logs for HeliPort."),
-                    options: [NSLocalizedString("Dismiss")],
-                    errorText: appLog
-                )
-                alert.show()
-            }
+            let alert = CriticalAlert(
+                message: NSLocalizedString("Error occurred while generating bug report."),
+                informativeText: appLog == .heliportCouldNotGetLogs ?
+                NSLocalizedString("Could not generate report for HeliPort.") :
+                NSLocalizedString("Command failed to fetch logs for HeliPort."),
+                options: [NSLocalizedString("Dismiss")],
+                errorText: appLog
+            )
+            alert.show()
             return
         }
 
@@ -123,44 +124,47 @@ class BugReporter {
         if itlwmVer.isEmpty { itlwmVer = "Unknown" }
         if itlwmFwVer.isEmpty { itlwmFwVer = "Unknown" }
 
-        let itlwmLog = generateItlwmLog()
+        let itlwmLog = await Task.detached(priority: .background) {
+            return generateItlwmLog()
+        }.value
 
         if itlwmLog == .msgbufInsufficient || itlwmLog == .scriptFailed {
-            DispatchQueue.main.async {
-                let alert = CriticalAlert(
-                    message: NSLocalizedString("Error occurred while generating bug report."),
-                    informativeText: itlwmLog == .msgbufInsufficient ?
-                    NSLocalizedString("Make sure you have installed `DebugEnhancer.kext`" +
-                                      " before collecting logs for itlwm.") :
-                    NSLocalizedString("Could not read logs for `itlwm`." +
-                                      " Make sure you allow `HeliPort` to read logs when prompted."),
-                    options: [NSLocalizedString("Dismiss"), NSLocalizedString("Open Documentation")],
-                    helpAnchor: .dmesgHelpURL,
-                    errorText: itlwmLog
-                )
+            let alert = CriticalAlert(
+                message: NSLocalizedString("Error occurred while generating bug report."),
+                informativeText: itlwmLog == .msgbufInsufficient ?
+                NSLocalizedString("Make sure you have installed `DebugEnhancer.kext`" +
+                                  " before collecting logs for itlwm.") :
+                NSLocalizedString("Could not read logs for `itlwm`." +
+                                  " Make sure you allow `HeliPort` to read logs when prompted."),
+                options: [NSLocalizedString("Dismiss"), NSLocalizedString("Open Documentation")],
+                helpAnchor: .dmesgHelpURL,
+                errorText: itlwmLog
+            )
 
-                if alert.show() == .alertSecondButtonReturn {
-                    NSWorkspace.shared.open(URL(string: .dmesgHelpURL)!)
-                }
+            if alert.show() == .alertSecondButtonReturn {
+                NSWorkspace.shared.open(URL(string: .dmesgHelpURL)!)
             }
             return
         }
 
         // MARK: Get itlwm name if loaded (itlwm or itlwmx)
 
-        let kextstatCommand = ["-c", "kextstat"]
-        let itlwmLoaded = Commands.execute(executablePath: .shell, args: kextstatCommand)
-        var itlwmName: String?
-        if let regex = try? NSRegularExpression.init(pattern: "\\b(itlwm\\w*)\\b", options: []), itlwmLoaded.0 != nil {
-            let firstMatch = regex.firstMatch(in: itlwmLoaded.0!,
-                                            options: [],
-                                            range: NSRange(location: 0, length: itlwmLoaded.0!.count))
-            if let range = firstMatch?.range(at: 1) {
-                if let swiftRange = Range(range, in: itlwmLoaded.0!) {
-                    itlwmName = String(itlwmLoaded.0![swiftRange])
-                }
+        let itlwmName = await Task.detached(priority: .background) { () -> String? in
+            let kextstatCommand = ["-c", "kextstat"]
+            let itlwmLoadedOutput = Commands.execute(executablePath: .shell, args: kextstatCommand).0
+            guard let itlwmLoadedOutput,
+                  let regex = try? NSRegularExpression.init(pattern: "\\b(itlwm\\w*)\\b", options: []) else {
+                return nil
             }
-        }
+            let firstMatch = regex.firstMatch(in: itlwmLoadedOutput,
+                                              options: [],
+                                              range: NSRange(location: 0, length: itlwmLoadedOutput.count))
+            if let range = firstMatch?.range(at: 1),
+               let swiftRange = Range(range, in: itlwmLoadedOutput) {
+                return String(itlwmLoadedOutput[swiftRange])
+            }
+            return nil
+        }.value
 
         // MARK: Output String
 
@@ -188,70 +192,57 @@ class BugReporter {
                           macOS \(osVersion)
                           """
 
-        DispatchQueue.main.async {
-            openPanel.begin { (result) in
-                var folderUrl: URL?
-                if result == NSApplication.ModalResponse.OK {
-                    folderUrl = openPanel.url
-                }
-
-                // Back to background
-                DispatchQueue.global().async {
-                    guard folderUrl != nil else {
-                        Log.error("Could not get path to store bug report.")
-                        DispatchQueue.main.async {
-                            let alert = CriticalAlert(
-                                message: NSLocalizedString("Could not get path to generate bug report."),
-                                options: ["Dismiss"]
-                            )
-                            alert.show()
-                        }
-                        return
-                    }
-
-                    let reportDirName = "bugreport_\(UInt16.random(in: UInt16.min...UInt16.max))"
-                    let reportDirUrl = folderUrl!.appendingPathComponent(reportDirName, isDirectory: true)
-
-                    // MARK: Write to files
-
-                    do {
-                        try FileManager.default.createDirectory(at: reportDirUrl,
-                                                                withIntermediateDirectories: true,
-                                                                attributes: nil)
-                        let heliPortFile = reportDirUrl.appendingPathComponent("HeliPort_logs.log")
-                        let itlwmFile = reportDirUrl.appendingPathComponent("\(itlwmName ?? "itlwm")_logs.log")
-                        try appOutput.write(to: heliPortFile, atomically: true, encoding: .utf8)
-                        try itlwmOutput.write(to: itlwmFile, atomically: true, encoding: .utf8)
-                    } catch {
-                        Log.error("\(error)")
-                        return
-                    }
-
-                    // MARK: Zip file
-
-                    let zipName = reportDirName + ".zip"
-                    let zipCommand = ["-c", "cd \(folderUrl!.path) && " +
-                                            "zip -r -X -m \(zipName) \(reportDirName)"]
-                    let outputExitCode = Commands.execute(executablePath: .shell, args: zipCommand).1
-                    guard outputExitCode == 0 else {
-                        Log.error("Could not create zip file: Exit code: \(outputExitCode)")
-                        DispatchQueue.main.async {
-                            let alert = CriticalAlert(
-                                message: NSLocalizedString("Could not create zip file for generated logs."),
-                                options: [NSLocalizedString("Dismiss")]
-                            )
-                            alert.show()
-                        }
-                        return
-                    }
-
-                    // MARK: Select zip file
-
-                    NSWorkspace.shared.selectFile("\(folderUrl!.path)/\(zipName)",
-                                                  inFileViewerRootedAtPath: folderUrl!.path)
-                }
-            }
+        let folderUrl = openPanel.runModal() == NSApplication.ModalResponse.OK ? openPanel.url : nil
+        guard let folderUrl else {
+            Log.error("Could not get path to store bug report.")
+            let alert = CriticalAlert(
+                message: NSLocalizedString("Could not get path to generate bug report."),
+                options: ["Dismiss"]
+            )
+            alert.show()
+            return
         }
+
+        let reportDirName = "bugreport_\(UInt16.random(in: UInt16.min...UInt16.max))"
+        let reportDirUrl = folderUrl.appendingPathComponent(reportDirName, isDirectory: true)
+        let heliPortLogUrl = reportDirUrl.appendingPathComponent("HeliPort_logs.log")
+        let itlwmLogUrl = reportDirUrl.appendingPathComponent("\(itlwmName ?? "itlwm")_logs.log")
+        let zipName = reportDirName + ".zip"
+        let zipPath = "\(folderUrl.path)/\(zipName)"
+        let outputFolderPath = folderUrl.path
+        let selectedFilePath = zipPath
+
+        let outputExitCode = await Task.detached(priority: .background) { () -> Int32 in
+            do {
+                try FileManager.default.createDirectory(at: reportDirUrl,
+                                                        withIntermediateDirectories: true,
+                                                        attributes: nil)
+                try appOutput.write(to: heliPortLogUrl, atomically: true, encoding: .utf8)
+                try itlwmOutput.write(to: itlwmLogUrl, atomically: true, encoding: .utf8)
+            } catch {
+                Log.error("\(error)")
+                return -1
+            }
+
+            let zipCommand = ["-c", "cd \(outputFolderPath) && " +
+                                    "zip -r -X -m \(zipName) \(reportDirName)"]
+            return Commands.execute(executablePath: .shell, args: zipCommand).1
+        }.value
+
+        guard outputExitCode == 0 else {
+            Log.error("Could not create zip file: Exit code: \(outputExitCode)")
+            let alert = CriticalAlert(
+                message: NSLocalizedString("Could not create zip file for generated logs."),
+                options: [NSLocalizedString("Dismiss")]
+            )
+            alert.show()
+            return
+        }
+
+        // MARK: Select zip file
+
+        NSWorkspace.shared.selectFile(selectedFilePath,
+                                      inFileViewerRootedAtPath: outputFolderPath)
     }
 }
 

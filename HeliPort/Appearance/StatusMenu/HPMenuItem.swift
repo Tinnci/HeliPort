@@ -35,7 +35,10 @@ class HPMenuItem: NSMenuItem {
 
     override var isHidden: Bool {
         willSet {
-            (self.view as? HidableMenuItemView)?.visible = !newValue
+            let itemView = self.view as? HidableMenuItemView
+            MainActor.assumeIsolated {
+                itemView?.visible = !newValue
+            }
         }
     }
 

@@ -16,6 +16,7 @@
 import Cocoa
 import LocalAuthentication
 
+@MainActor
 class WiFiConfigWindow: NSWindow {
 
     // MARK: Initializers
@@ -25,7 +26,7 @@ class WiFiConfigWindow: NSWindow {
     private var windowState: WindowState
     private var networkInfo: NetworkInfo?
     private var authenticated = false
-    private var getAuthInfoCallback: ((_ auth: NetworkAuth, _ savePassword: Bool) -> Void)?
+    private var getAuthInfoCallback: (@MainActor (_ auth: NetworkAuth, _ savePassword: Bool) -> Void)?
     private var errorState: ErrorState?
 
     private let icon: NSImageView = {
@@ -195,7 +196,7 @@ class WiFiConfigWindow: NSWindow {
     convenience init(windowState: WindowState = .joinWiFi,
                      networkInfo: NetworkInfo? = nil,
                      error: ErrorState? = nil,
-                     getAuthInfoCallback: ((_ auth: NetworkAuth, _ savePassword: Bool) -> Void)? = nil) {
+                     getAuthInfoCallback: (@MainActor (_ auth: NetworkAuth, _ savePassword: Bool) -> Void)? = nil) {
         self.init(contentRect: NSRect(x: 0, y: 0, width: 450, height: 247),
                   styleMask: .titled,
                   backing: .buffered,
@@ -213,7 +214,7 @@ class WiFiConfigWindow: NSWindow {
          windowState: WindowState,
          networkInfo: NetworkInfo?,
          error: ErrorState?,
-         getAuthInfoCallback: ((_ auth: NetworkAuth, _ savePassword: Bool) -> Void)? = nil) {
+         getAuthInfoCallback: (@MainActor (_ auth: NetworkAuth, _ savePassword: Bool) -> Void)? = nil) {
 
         self.windowState = windowState
         super.init(contentRect: contentRect,
@@ -507,15 +508,15 @@ extension WiFiConfigWindow {
         if showPass && windowState == .viewCredentialsWiFi && !authenticated {
             let auth = LAContext()
             auth.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: .authReason) { (success, error) in
-                self.authenticated = success
-                if success {
-                    // If succeeds with no errors, show password
-                    DispatchQueue.main.async { self.showPasswd(nil) }
-                } else {
-                    Log.error("Unable to show password due to \(String(describing: error))")
-                    DispatchQueue.main.async { self.isShowPasswd.state = .off }
-                }
-                DispatchQueue.main.async {
+                Task { @MainActor in
+                    self.authenticated = success
+                    if success {
+                        // If succeeds with no errors, show password
+                        self.showPasswd(nil)
+                    } else {
+                        Log.error("Unable to show password due to \(String(describing: error))")
+                        self.isShowPasswd.state = .off
+                    }
                     NSApplication.shared.activate(ignoringOtherApps: true)
                 }
             }
@@ -534,14 +535,14 @@ extension WiFiConfigWindow {
     }
 
     private func connect() {
-        guard let network = networkInfo else { return }
+        guard var network = networkInfo else { return }
         network.auth.password = passwdInputBox.stringValue
         getAuthInfoCallback?(network.auth, isSave.state == .on)
         close()
     }
 
     private func joinWiFi() {
-        let network = NetworkInfo(ssid: networkBox.stringValue)
+        var network = NetworkInfo(ssid: networkBox.stringValue)
         network.auth.password = passwdInputBox.stringValue
 
         switch securityPop.title {

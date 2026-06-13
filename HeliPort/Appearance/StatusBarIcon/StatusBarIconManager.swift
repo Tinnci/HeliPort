@@ -15,6 +15,7 @@
 
 import Cocoa
 
+@MainActor
 protocol StatusBarIconProvider {
     var transition: CATransition? { get }
     var off: NSImage { get }
@@ -25,6 +26,7 @@ protocol StatusBarIconProvider {
     func getRssiImage(_ RSSI: Int16) -> NSImage?
 }
 
+@MainActor
 class StatusBarIcon {
     private static var instance: StatusBarIcon?
 
@@ -74,18 +76,14 @@ class StatusBarIcon {
         guard timer == nil else { return }
         tickIndex = 0
         tickDirection = 1
-        DispatchQueue.global(qos: .default).async {
-            self.timer = Timer.scheduledTimer(
-                timeInterval: 0.3,
-                target: self,
-                selector: #selector(self.tick),
-                userInfo: nil,
-                repeats: true
-            )
-            self.timer?.fire()
-            RunLoop.current.add(self.timer!, forMode: .common)
-            RunLoop.current.run()
-        }
+        timer = Timer.scheduledTimer(
+            timeInterval: 0.3,
+            target: self,
+            selector: #selector(tick),
+            userInfo: nil,
+            repeats: true
+        )
+        timer?.fire()
     }
 
     func warning() {
@@ -108,16 +106,14 @@ class StatusBarIcon {
     }
 
     @objc private func tick() {
-        DispatchQueue.main.async {
-            if let transition = self.icons.transition {
-                self.statusBar.button?.layer?.add(transition, forKey: kCATransition)
-            }
-            self.statusBar.button?.image = self.icons.scanning[self.tickIndex]
+        if let transition = icons.transition {
+            statusBar.button?.layer?.add(transition, forKey: kCATransition)
+        }
+        statusBar.button?.image = icons.scanning[tickIndex]
 
-            self.tickIndex += self.tickDirection
-            if self.tickIndex == 0 || self.tickIndex == self.icons.scanning.endIndex - 1 {
-                self.tickDirection *= -1
-            }
+        tickIndex += tickDirection
+        if tickIndex == 0 || tickIndex == icons.scanning.endIndex - 1 {
+            tickDirection *= -1
         }
     }
 

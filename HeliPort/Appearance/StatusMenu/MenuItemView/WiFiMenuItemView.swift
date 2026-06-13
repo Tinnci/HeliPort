@@ -15,6 +15,7 @@
 
 import Cocoa
 
+@MainActor
 protocol WifiMenuItemView: SelectableMenuItemView {
     var networkInfo: NetworkInfo { get set }
     var connected: Bool { get set }

@@ -13,6 +13,7 @@
  * https://opensource.org/licenses/BSD-3-Clause
  */
 
+@MainActor
 class HidableMenuItemView: NSView {
     private let height: CGFloat
     private var heightConstraint: NSLayoutConstraint!

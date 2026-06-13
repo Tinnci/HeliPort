@@ -15,6 +15,7 @@
 
 import Cocoa
 
+@MainActor
 class PrefsSavedNetworksView: NSView {
 
     // MARK: Saved networks array
@@ -116,12 +117,10 @@ class PrefsSavedNetworksView: NSView {
 
         setupConstraints()
 
-        DispatchQueue.global(qos: .background).async {
-            self.savedNetworks = CredentialsManager.instance.getSavedNetworksEntity()
-            DispatchQueue.main.async {
-                self.tableView.reloadData()
-                NSApplication.shared.activate(ignoringOtherApps: true)
-            }
+        Task { @MainActor in
+            self.savedNetworks = await CredentialsManager.instance.getSavedNetworksEntity()
+            self.tableView.reloadData()
+            NSApplication.shared.activate(ignoringOtherApps: true)
         }
     }
 
@@ -150,13 +149,11 @@ class PrefsSavedNetworksView: NSView {
 
     private func updateNetworkPriority() {
         Log.debug("Updating network priority")
-        for order in 0..<savedNetworks.count {
-            let entity = savedNetworks[order]
-            if entity.order != order {
-                entity.order = order
-                DispatchQueue.global(qos: .background).async {
-                    CredentialsManager.instance.setPriority(entity.network.ssid, order)
-                }
+        for order in 0..<savedNetworks.count where savedNetworks[order].order != order {
+            savedNetworks[order].order = order
+            let ssid = savedNetworks[order].network.ssid
+            Task.detached(priority: .background) {
+                await CredentialsManager.instance.setPriority(ssid, order)
             }
         }
     }
@@ -209,12 +206,10 @@ extension PrefsSavedNetworksView {
         alert.beginSheetModal(for: currentWindow) { response in
             switch response {
             case .alertFirstButtonReturn:
-                DispatchQueue.global(qos: .background).async {
-                    CredentialsManager.instance.remove(networkEntity.network)
-                    DispatchQueue.main.async {
-                        self.savedNetworks.remove(at: index)
-                        self.tableView.removeRows(at: IndexSet(integer: index), withAnimation: .effectFade)
-                    }
+                Task { @MainActor in
+                    await CredentialsManager.instance.remove(networkEntity.network)
+                    self.savedNetworks.remove(at: index)
+                    self.tableView.removeRows(at: IndexSet(integer: index), withAnimation: .effectFade)
                 }
             default:
                 break
@@ -225,18 +220,16 @@ extension PrefsSavedNetworksView {
     @objc func autoJoinCheckboxChanged(_ sender: NSButton) {
         let rowIndex = tableView.row(for: sender)
         let columnIndex = tableView.column(for: sender)
-        let networkEntity = savedNetworks[rowIndex]
+        var networkEntity = savedNetworks[rowIndex]
         Log.debug("Auto join checkbox changed for \(networkEntity.network.ssid)")
         let autoJoinEnabled = sender.state == .on
         networkEntity.autoJoin = autoJoinEnabled
 
-        DispatchQueue.global(qos: .background).async {
-            CredentialsManager.instance.setAutoJoin(networkEntity.network.ssid, autoJoinEnabled)
-            DispatchQueue.main.async {
-                self.savedNetworks[rowIndex] = networkEntity
-                self.tableView.reloadData(forRowIndexes: IndexSet(integer: rowIndex),
-                                          columnIndexes: IndexSet(integer: columnIndex))
-            }
+        Task { @MainActor in
+            await CredentialsManager.instance.setAutoJoin(networkEntity.network.ssid, autoJoinEnabled)
+            self.savedNetworks[rowIndex] = networkEntity
+            self.tableView.reloadData(forRowIndexes: IndexSet(integer: rowIndex),
+                                      columnIndexes: IndexSet(integer: columnIndex))
         }
     }
 }
@@ -308,9 +301,10 @@ extension PrefsSavedNetworksView: NSTableViewDataSource {
                    dropOperation: NSTableView.DropOperation) -> Bool {
         let pasteBoard = info.draggingPasteboard
         if let itemData = pasteBoard.pasteboardItems?.first?.data(forType: .rowOrder),
-            let indexes = NSKeyedUnarchiver.unarchiveObject(with: itemData) as? IndexSet,
-            let originalRow = indexes.first {
+           let indexes = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSIndexSet.self, from: itemData),
+           indexes.firstIndex != NSNotFound {
 
+            let originalRow = indexes.firstIndex
             var newRow = row
             if originalRow < newRow {
                 newRow = row - 1
@@ -334,8 +328,13 @@ extension PrefsSavedNetworksView: NSTableViewDataSource {
 
     // Allows drag operation
 
-    func tableView(_ tableView: NSTableView, writeRowsWith rowIndexes: IndexSet, to pboard: NSPasteboard) -> Bool {
-        let data = NSKeyedArchiver.archivedData(withRootObject: rowIndexes)
+    nonisolated func tableView(_ tableView: NSTableView,
+                               writeRowsWith rowIndexes: IndexSet,
+                               to pboard: NSPasteboard) -> Bool {
+        guard let data = try? NSKeyedArchiver.archivedData(withRootObject: rowIndexes as NSIndexSet,
+                                                           requiringSecureCoding: false) else {
+            return false
+        }
         let item = NSPasteboardItem()
         item.setData(data, forType: .rowOrder)
         pboard.writeObjects([item])

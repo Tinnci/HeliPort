@@ -7,8 +7,9 @@
 //
 
 import Foundation
-import Sparkle
+@preconcurrency import Sparkle
 
+@MainActor
 final class UpdateManager {
     public static let sharedController = SPUStandardUpdaterController(startingUpdater: true,
                                                                       updaterDelegate: nil,

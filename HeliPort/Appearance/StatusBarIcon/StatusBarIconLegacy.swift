@@ -15,6 +15,7 @@
 
 import Cocoa
 
+@MainActor
 class StatusBarIconLegacy: StatusBarIconProvider {
     var transition: CATransition? { return nil }
     var off: NSImage { return #imageLiteral(resourceName: "LegacyStateOff") }

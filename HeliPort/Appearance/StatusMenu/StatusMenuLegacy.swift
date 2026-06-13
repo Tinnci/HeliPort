@@ -183,15 +183,13 @@ final class StatusMenuLegacy: StatusMenuBase, StatusMenuItems {
     }
 
     func toggleWIFI() {
-        DispatchQueue.main.async {
-            self.clickMenuItem(self.switchItem)
-        }
+        clickMenuItem(switchItem)
     }
 
     @objc func disassociateSSID(_ sender: NSMenuItem) {
         guard let ssid = sender.representedObject as? String else { return }
-        DispatchQueue.global().async {
-            CredentialsManager.instance.setAutoJoin(ssid, false)
+        Task.detached(priority: .background) {
+            await CredentialsManager.instance.setAutoJoin(ssid, false)
             dis_associate_ssid(ssid)
             Log.debug("Disconnected from \(ssid)")
         }
@@ -220,20 +218,18 @@ final class StatusMenuLegacy: StatusMenuBase, StatusMenuItems {
         super.setCurrentNetworkItem(with: info)
         guard isNetworkConnected, let ssid = info.ssid else { return }
 
-        DispatchQueue.global(qos: .background).async {
+        Task { @MainActor in
 #if !DEBUG
-            let autoJoin = CredentialsManager.instance.getStorageFromSsid(ssid)?.autoJoin ?? false
+            let autoJoin = await CredentialsManager.instance.getStorageFromSsid(ssid)?.autoJoin ?? false
 #else
             let autoJoin = false
 #endif
             let hidden = autoJoin && !self.showAllOptions
-            DispatchQueue.main.async {
-                if !hidden {
-                    self.disconnectItem.representedObject = ssid
-                    self.disconnectItem.title = .Legacy.disconnectNet + ssid
-                }
-                self.disconnectItem.isHidden = hidden
+            if !hidden {
+                self.disconnectItem.representedObject = ssid
+                self.disconnectItem.title = .Legacy.disconnectNet + ssid
             }
+            self.disconnectItem.isHidden = hidden
         }
     }
 }

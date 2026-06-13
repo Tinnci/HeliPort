@@ -15,7 +15,8 @@
 
 import Cocoa
 
-@NSApplicationMain
+@main
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ aNotification: Notification) {
 
@@ -41,11 +42,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }()
         _ = StatusBarIcon.shared(statusBar: statusBar, icons: iconProvider)
 
+        let statusMenu: StatusMenuBase
         if #available(macOS 11, *), !legacyUIEnabled {
-            statusBar.menu = StatusMenuModern()
+            statusMenu = StatusMenuModern()
         } else {
-            statusBar.menu = StatusMenuLegacy()
+            statusMenu = StatusMenuLegacy()
         }
+        statusMenu.configure()
+        statusBar.menu = statusMenu
     }
 
     private var drv_info = ioctl_driver_info()

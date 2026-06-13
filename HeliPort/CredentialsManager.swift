@@ -14,9 +14,9 @@
  */
 
 import Foundation
-import KeychainAccess
+@preconcurrency import KeychainAccess
 
-final class CredentialsManager {
+actor CredentialsManager {
     static let instance: CredentialsManager = CredentialsManager()
 
     private let keychain: Keychain
@@ -28,12 +28,13 @@ final class CredentialsManager {
     }
 
     func save(_ network: NetworkInfo) {
-        guard let networkAuthJson = try? String(decoding: JSONEncoder().encode(network.auth), as: UTF8.self) else {
+        guard let networkAuthJson = encodedJSONString(network.auth) else {
             return
         }
-        network.auth = NetworkAuth()
-        let entity = NetworkInfoStorageEntity(network)
-        guard let entityJson = try? String(decoding: JSONEncoder().encode(entity), as: UTF8.self) else {
+        var storageNetwork = network
+        storageNetwork.auth = NetworkAuth()
+        let entity = NetworkInfoStorageEntity(storageNetwork)
+        guard let entityJson = encodedJSONString(entity) else {
             return
         }
 
@@ -80,15 +81,15 @@ final class CredentialsManager {
     }
 
     func setAutoJoin(_ ssid: String, _ autoJoin: Bool) {
-        guard let entity = getStorageFromSsid(ssid),
+        guard var entity = getStorageFromSsid(ssid),
             let auth = getAuthFromSsid(ssid) else {
                 return
         }
 
         entity.autoJoin = autoJoin
 
-        guard let entityJson = try? String(decoding: JSONEncoder().encode(entity), as: UTF8.self),
-              let authJson = try? String(decoding: JSONEncoder().encode(auth), as: UTF8.self) else {
+        guard let entityJson = encodedJSONString(entity),
+              let authJson = encodedJSONString(auth) else {
             return
         }
 
@@ -96,15 +97,15 @@ final class CredentialsManager {
     }
 
     func setPriority(_ ssid: String, _ priority: Int) {
-        guard let entity = getStorageFromSsid(ssid),
+        guard var entity = getStorageFromSsid(ssid),
             let auth = getAuthFromSsid(ssid) else {
                 return
         }
 
         entity.order = priority
 
-        guard let entityJson = try? String(decoding: JSONEncoder().encode(entity), as: UTF8.self),
-              let authJson = try? String(decoding: JSONEncoder().encode(auth), as: UTF8.self) else {
+        guard let entityJson = encodedJSONString(entity),
+              let authJson = encodedJSONString(auth) else {
             return
         }
 
@@ -140,12 +141,21 @@ final class CredentialsManager {
         }.sorted {
             $0.order < $1.order
         }.map { entity in
+            var entity = entity
             guard let auth = getAuthFromSsid(entity.network.ssid) else {
                 return entity
             }
             entity.network.auth = auth
             return entity
         }
+    }
+
+    private func encodedJSONString<T: Encodable>(_ value: T) -> String? {
+        guard let data = try? JSONEncoder().encode(value) else {
+            return nil
+        }
+
+        return String(data: data, encoding: .utf8)
     }
 }
 

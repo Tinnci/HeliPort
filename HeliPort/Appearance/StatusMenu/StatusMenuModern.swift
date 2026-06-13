@@ -29,7 +29,7 @@ final class StatusMenuModern: StatusMenuBase, StatusMenuItems {
         return item
     }()
 
-    private let knownSectionItem: NSMenuItem = {
+    private lazy var knownSectionItem: NSMenuItem = {
         let item = HPMenuItem()
         item.view = SectionMenuItemView(title: .Modern.knownNetwork)
         return item
@@ -226,9 +226,7 @@ final class StatusMenuModern: StatusMenuBase, StatusMenuItems {
     }
 
     func toggleWIFI() {
-        DispatchQueue.main.async {
-            (self.statusItem.view as? StateSwitchMenuItemView)?.toggle()
-        }
+        (statusItem.view as? StateSwitchMenuItemView)?.toggle()
     }
 
     // - MARK: Overrides

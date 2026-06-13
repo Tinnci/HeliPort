@@ -26,114 +26,142 @@ final class NetworkManager {
         ITL80211_SECURITY_PERSONAL
     ]
 
-    private static let associationFailureQueue = DispatchQueue(label: "heliport.associationFailure")
-    private static var associationFailureSummary: String?
+    private actor AssociationFailureStore {
+        private var summary: String?
 
-    static var lastAssociationFailure: String? {
-        associationFailureQueue.sync { associationFailureSummary }
+        func get() -> String? {
+            return summary
+        }
+
+        func set(_ summary: String?) {
+            self.summary = summary
+        }
+
+        func clear() {
+            summary = nil
+        }
     }
 
-    static func connect(networkInfo: NetworkInfo, saveNetwork: Bool = false,
-                        _ callback: ((_ result: Bool) -> Void)? = nil) {
+    private static let associationFailureStore = AssociationFailureStore()
 
+    @MainActor
+    static func connect(networkInfo: NetworkInfo, saveNetwork: Bool = false,
+                        _ callback: (@MainActor @Sendable (_ result: Bool) -> Void)? = nil) {
+        Task { @MainActor in
+            let result = await connect(networkInfo: networkInfo, saveNetwork: saveNetwork)
+            callback?(result)
+        }
+    }
+
+    @MainActor
+    @discardableResult
+    static func connect(networkInfo: NetworkInfo, saveNetwork: Bool = false) async -> Bool {
         guard supportedSecurityMode.contains(networkInfo.auth.security) else {
             let alert = Alert(text: NSLocalizedString("Network security not supported: ")
                               + networkInfo.auth.security.description)
             alert.show()
-            return
+            return false
         }
 
-        let getAuthInfoCallback: (_ auth: NetworkAuth, _ savePassword: Bool) -> Void = { auth, savePassword in
-            DispatchQueue.global(qos: .background).async {
-                StatusBarIcon.shared().connecting()
-                let result = connect_network(networkInfo.ssid, auth.password)
-                DispatchQueue.main.async {
-                    if result {
-                        clearAssociationFailure()
-                        if savePassword {
-                            CredentialsManager.instance.save(networkInfo)
-                        }
-                    } else {
-                        let failure = refreshAssociationFailure()
-                        StatusBarIcon.shared().warning()
-                        Log.error("Failed to connect to: \(networkInfo.ssid)" +
-                                  (failure.map { " (\($0))" } ?? ""))
-                    }
-                    callback?(result)
-                }
-            }
-        }
+        var network = networkInfo
+        var shouldSave = saveNetwork
 
         // Getting keychain access blocks UI Thread and makes everything freeze unless made async
-        DispatchQueue.global().async {
-            if let savedNetworkAuth = CredentialsManager.instance.get(networkInfo) {
-                networkInfo.auth = savedNetworkAuth
-                Log.debug("Connecting to network \(networkInfo.ssid) with saved password")
-                CredentialsManager.instance.setAutoJoin(networkInfo.ssid, true)
-                getAuthInfoCallback(networkInfo.auth, false)
-                return
+        if let savedNetworkAuth = await CredentialsManager.instance.get(network) {
+            network.auth = savedNetworkAuth
+            shouldSave = false
+            Log.debug("Connecting to network \(network.ssid) with saved password")
+            await CredentialsManager.instance.setAutoJoin(network.ssid, true)
+        } else if network.auth.security != ITL80211_SECURITY_NONE,
+                  network.auth.password.isEmpty {
+            guard let authInfo = await requestAuthInfo(for: network) else {
+                return false
             }
-
-            guard networkInfo.auth.security != ITL80211_SECURITY_NONE,
-                  networkInfo.auth.password.isEmpty else {
-                getAuthInfoCallback(networkInfo.auth, saveNetwork)
-                return
-            }
-
-            DispatchQueue.main.async {
-                WiFiConfigWindow(windowState: .connectWiFi,
-                                 networkInfo: networkInfo,
-                                 getAuthInfoCallback: getAuthInfoCallback).show()
-            }
+            network.auth = authInfo.auth
+            shouldSave = authInfo.savePassword
         }
+
+        StatusBarIcon.shared().connecting()
+        let ssid = network.ssid
+        let password = network.auth.password
+        let result = await Task.detached(priority: .background) {
+            return connect_network(ssid, password)
+        }.value
+
+        if result {
+            await clearAssociationFailure()
+            if shouldSave {
+                await CredentialsManager.instance.save(network)
+            }
+        } else {
+            let failure = await refreshAssociationFailure()
+            StatusBarIcon.shared().warning()
+            Log.error("Failed to connect to: \(network.ssid)" +
+                      (failure.map { " (\($0))" } ?? ""))
+        }
+
+        return result
+    }
+
+    @MainActor
+    private static func requestAuthInfo(
+        for networkInfo: NetworkInfo
+    ) async -> (auth: NetworkAuth, savePassword: Bool)? {
+        return await withCheckedContinuation { continuation in
+            WiFiConfigWindow(windowState: .connectWiFi,
+                             networkInfo: networkInfo,
+                             getAuthInfoCallback: { auth, savePassword in
+                                 continuation.resume(returning: (auth, savePassword))
+                             }).show()
+        }
+    }
+
+    static func lastAssociationFailure() async -> String? {
+        return await associationFailureStore.get()
     }
 
     @discardableResult
-    static func refreshAssociationFailure() -> String? {
+    static func refreshAssociationFailure() async -> String? {
         var status = ioctl_assoc_status()
-        guard get_assoc_status(&status) else { return lastAssociationFailure }
+        guard get_assoc_status(&status) else { return await lastAssociationFailure() }
 
         let summary = associationFailureDescription(status)
-        associationFailureQueue.sync {
-            associationFailureSummary = summary
-        }
+        await associationFailureStore.set(summary)
         return summary
     }
 
-    static func clearAssociationFailure() {
-        associationFailureQueue.sync {
-            associationFailureSummary = nil
-        }
+    static func clearAssociationFailure() async {
+        await associationFailureStore.clear()
     }
 
-    static func scanNetwork(sortBy areInIncreasingOrder: @escaping (NetworkInfo, NetworkInfo) -> Bool
+    @MainActor
+    static func scanNetwork(sortBy areInIncreasingOrder: @escaping @Sendable (NetworkInfo, NetworkInfo) -> Bool
                                 = { $0.ssid < $1.ssid },
-                            callback: @escaping (_ sortedNetworkInfoList: [NetworkInfo]) -> Void) {
-        scanNetwork { result in
+                            callback: @escaping @MainActor @Sendable (_ sortedNetworkInfoList: [NetworkInfo]) -> Void) {
+        Task { @MainActor in
+            let result = await scanNetwork()
             callback(result.sorted(by: areInIncreasingOrder))
         }
     }
 
-    static func scanNetwork(sortBy areInIncreasingOrder: @escaping (NetworkInfo, NetworkInfo) -> Bool
+    @MainActor
+    static func scanNetwork(sortBy areInIncreasingOrder: @escaping @Sendable (NetworkInfo, NetworkInfo) -> Bool
                                 = { $0.ssid < $1.ssid },
-                            callback: @escaping (_ knownNetworks: [NetworkInfo],
-                                                 _ otherNetworks: [NetworkInfo]) -> Void) {
-        DispatchQueue.global(qos: .background).async {
-            let savedSSIDs = CredentialsManager.instance.getSavedNetworkSSIDs()
-            scanNetwork { result in
-                let known = result.filter { savedSSIDs.contains($0.ssid) }
-                let other = result.subtracting(known)
+                            callback: @escaping @MainActor @Sendable (_ knownNetworks: [NetworkInfo],
+                                                                      _ otherNetworks: [NetworkInfo]) -> Void) {
+        Task { @MainActor in
+            let savedSSIDs = await CredentialsManager.instance.getSavedNetworkSSIDs()
+            let result = await scanNetwork()
+            let known = result.filter { savedSSIDs.contains($0.ssid) }
+            let other = result.subtracting(known)
 
-                DispatchQueue.main.async {
-                    callback(known.sorted(by: areInIncreasingOrder),
-                             other.sorted(by: areInIncreasingOrder))
-                }
-            }
+            callback(known.sorted(by: areInIncreasingOrder),
+                     other.sorted(by: areInIncreasingOrder))
         }
     }
 
-    private static func scanNetwork(callback: @escaping (_ networkInfoList: Set<NetworkInfo>) -> Void) {
-        DispatchQueue.global(qos: .background).async {
+    private static func scanNetwork() async -> Set<NetworkInfo> {
+        return await Task.detached(priority: .background) {
             var list = network_info_list_t()
             get_network_list(&list)
 
@@ -149,7 +177,7 @@ final class NetworkManager {
                     continue
                 }
 
-                let networkInfo = NetworkInfo(
+                var networkInfo = NetworkInfo(
                     ssid: ssid,
                     rssi: Int(network.rssi)
                 )
@@ -157,48 +185,35 @@ final class NetworkManager {
                 result.insert(networkInfo)
             }
 
-            DispatchQueue.main.async {
-                callback(result)
-            }
-        }
+            return result
+        }.value
     }
 
     static func scanSavedNetworks() {
-        DispatchQueue.global(qos: .background).async {
-            let savedNetworks: [NetworkInfo] = CredentialsManager.instance.getSavedNetworks()
+        Task.detached(priority: .background) {
+            let savedNetworks: [NetworkInfo] = await CredentialsManager.instance.getSavedNetworks()
             guard savedNetworks.count > 0 else {
                 Log.debug("No network saved for auto join")
                 return
             }
-            let scanTimer: Timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { timer in
-                NetworkManager.scanNetwork { networkList in
-                    let targetNetworks = savedNetworks.filter { networkList.contains($0) }
-                    if targetNetworks.count > 0 {
-                        // This will stop the timer completely
-                        timer.invalidate()
-                        Log.debug("Auto join timer stopped")
-                        connectSavedNetworks(networks: targetNetworks)
-                    }
+            while !Task.isCancelled {
+                let networkList = await scanNetwork()
+                let targetNetworks = savedNetworks.filter { networkList.contains($0) }
+                if targetNetworks.count > 0 {
+                    Log.debug("Auto join scan stopped")
+                    await connectSavedNetworks(networks: targetNetworks)
+                    return
                 }
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
-            // Start executing code inside the timer immediately
-            scanTimer.fire()
-            let currentRunLoop = RunLoop.current
-            currentRunLoop.add(scanTimer, forMode: .common)
-            currentRunLoop.run()
         }
     }
 
-    private static func connectSavedNetworks(networks: [NetworkInfo]) {
-        DispatchQueue.global(qos: .background).async {
-            let dispatchSemaphore = DispatchSemaphore(value: 0)
-            var connected = false
-            for network in networks where !connected {
-                connect(networkInfo: network) { (result: Bool) in
-                    connected = result
-                    dispatchSemaphore.signal()
-                }
-                dispatchSemaphore.wait()
+    private static func connectSavedNetworks(networks: [NetworkInfo]) async {
+        for network in networks {
+            let connected = await connect(networkInfo: network)
+            if connected {
+                return
             }
         }
     }
@@ -306,9 +321,9 @@ final class NetworkManager {
                         nil, socklen_t(0), NI_NUMERICHOST)
 
             if addrFamily == UInt8(AF_INET) {
-                ipV4 = String(cString: hostname)
+                ipV4 = string(fromNullTerminatedCChars: hostname)
             } else if addrFamily == UInt8(AF_INET6) {
-                ipV6 = String(cString: hostname)
+                ipV6 = string(fromNullTerminatedCChars: hostname)
             }
         }
 
@@ -406,7 +421,7 @@ final class NetworkManager {
             var ifname = [CChar](repeating: 0, count: Int(IFNAMSIZ + 1))
             if_indextoname(UInt32(rtm.rtm_index), &ifname)
 
-            if String(cString: ifname) == bsd, let addr = getRouterAddressFromRTM(rtm, next) {
+            if string(fromNullTerminatedCChars: ifname) == bsd, let addr = getRouterAddressFromRTM(rtm, next) {
                 return addr
             }
 
@@ -532,5 +547,10 @@ final class NetworkManager {
             return "PMF capable"
         }
         return "PMF disabled"
+    }
+
+    private static func string(fromNullTerminatedCChars chars: [CChar]) -> String {
+        let bytes = chars.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(bytes: bytes, encoding: .utf8) ?? ""
     }
 }

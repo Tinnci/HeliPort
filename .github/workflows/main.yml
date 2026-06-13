@@ -25,8 +25,41 @@ env:
   ARTIFACT_DIR: Artifacts
 
 jobs:
+  swift_concurrency_audit:
+    name: Swift Concurrency Audit
+    runs-on: macos-latest
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v6.0.3
+      with:
+        fetch-depth: 0
+
+    - uses: actions/cache@v5.0.5
+      with:
+        path: build-concurrency-audit/SourcePackages
+        key: ${{ runner.os }}-spm-concurrency-${{ hashFiles('**/Package.resolved') }}
+        restore-keys: |
+          ${{ runner.os }}-spm-concurrency-
+          ${{ runner.os }}-spm-
+
+    - name: Build with Complete Swift Concurrency Checking
+      run: |
+        set -o pipefail
+        xcodebuild ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO -scheme HeliPort -configuration Debug -derivedDataPath build-concurrency-audit -disableAutomaticPackageResolution CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO SWIFT_STRICT_CONCURRENCY=complete OTHER_SWIFT_FLAGS="-warn-concurrency" > concurrency-audit.log
+
+    - name: Fail on Swift 6 Concurrency Warnings
+      run: |
+        set -euo pipefail
+        if grep -E "/HeliPort/(HeliPort|HeliPort Launcher)/.*warning:.*(Swift 6 language mode|Sendable|sendable|MainActor|main actor|concurrency|data races|actor-isolated|nonisolated)" concurrency-audit.log; then
+          echo "::error::Swift concurrency audit found warnings that must be fixed before enabling Swift 6."
+          exit 1
+        fi
+
   validate_package:
     name: Validate, Package, and Checksum
+    needs: swift_concurrency_audit
     runs-on: macos-latest
     permissions:
       contents: read

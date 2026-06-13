@@ -16,6 +16,7 @@
 import Cocoa
 import Sparkle
 
+@MainActor
 protocol StatusMenuItems {
     var enabledNetworkCardItems: [NSMenuItem] { get }
     var stationInfoItems: [NSMenuItem] { get }
@@ -28,6 +29,7 @@ protocol StatusMenuItems {
     func toggleWIFI()
 }
 
+@MainActor
 class StatusMenuBase: NSMenu, NSMenuDelegate {
 
     // - MARK: Properties
@@ -38,6 +40,20 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
     var headerLength: Int = 0
     private var networkListUpdateTimer: Timer?
     private var statusUpdateTimer: Timer?
+
+    private struct DeviceInfo: Sendable {
+        var bsdName: String = .unavailable
+        var macAddr: String = .unavailable
+        var itlwmVer: String = .unavailable
+        var shouldScanSavedNetworks: Bool = false
+    }
+
+    private struct StatusInfo: Sendable {
+        let getPowerResult: Bool
+        let getStateResult: Bool
+        let powerState: Bool
+        let status: UInt32
+    }
 
     // One instance at a time
     private lazy var preferenceWindow = PrefsWindow()
@@ -56,14 +72,15 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
             case ITL80211_S_AUTH, ITL80211_S_ASSOC:
                 StatusBarIcon.shared().connecting()
             case ITL80211_S_RUN:
-                DispatchQueue.global(qos: .background).async {
-                    let isReachable = NetworkManager.isReachable()
-                    var staInfo = station_info_t()
-                    get_station_info(&staInfo)
-                    DispatchQueue.main.async {
-                        guard isReachable else { StatusBarIcon.shared().warning(); return }
-                        StatusBarIcon.shared().signalStrength(rssi: staInfo.rssi)
-                    }
+                Task { @MainActor in
+                    let signal = await Task.detached(priority: .background) { () -> (Bool, Int16) in
+                        let isReachable = NetworkManager.isReachable()
+                        var staInfo = station_info_t()
+                        get_station_info(&staInfo)
+                        return (isReachable, staInfo.rssi)
+                    }.value
+                    guard signal.0 else { StatusBarIcon.shared().warning(); return }
+                    StatusBarIcon.shared().signalStrength(rssi: signal.1)
                 }
             case ITL80211_S_SCAN:
                 /** API does not report bgscan to HeliPort. During `ITL80211_S_RUN` the status
@@ -149,7 +166,7 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
     }()
 
     let aboutItem = HPMenuItem(title: .aboutHeliport)
-    let checkUpdateItem = {
+    lazy var checkUpdateItem: HPMenuItem = {
          let item = HPMenuItem(title: .checkUpdates)
          item.target = UpdateManager.sharedController
          item.action = #selector(SPUStandardUpdaterController.checkForUpdates(_:))
@@ -183,26 +200,23 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
 
     init() {
         super.init(title: "")
+    }
+
+    func configure() {
         delegate = self
         isAutoLaunch = LoginItemManager.isEnabled()
 
         (self as? StatusMenuItems)?.setupMenu()
         getDeviceInfo()
 
-        DispatchQueue.global(qos: .default).async {
-            self.statusUpdateTimer = Timer.scheduledTimer(
-                timeInterval: self.statusUpdatePeriod,
-                target: self,
-                selector: #selector(self.updateStatus),
-                userInfo: nil,
-                repeats: true
-            )
-
-            self.statusUpdateTimer?.fire()
-            let currentRunLoop = RunLoop.current
-            currentRunLoop.add(self.statusUpdateTimer!, forMode: .common)
-            currentRunLoop.run()
-        }
+        statusUpdateTimer = Timer.scheduledTimer(
+            timeInterval: statusUpdatePeriod,
+            target: self,
+            selector: #selector(updateStatus),
+            userInfo: nil,
+            repeats: true
+        )
+        statusUpdateTimer?.fire()
 
         NSApp.servicesProvider = self
     }
@@ -221,20 +235,15 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         showAllOptions = (NSApp.currentEvent?.modifierFlags.contains(.option)) ?? false
 
-        DispatchQueue.global(qos: .default).async {
-            self.updateStationItems()
-            self.networkListUpdateTimer = Timer.scheduledTimer(
-                timeInterval: self.networkListUpdatePeriod,
-                target: self,
-                selector: #selector(self.updateNetworkList),
-                userInfo: nil,
-                repeats: true
-            )
-            self.networkListUpdateTimer?.fire()
-            let currentRunLoop = RunLoop.current
-            currentRunLoop.add(self.networkListUpdateTimer!, forMode: .common)
-            currentRunLoop.run()
-        }
+        updateStationItems()
+        networkListUpdateTimer = Timer.scheduledTimer(
+            timeInterval: networkListUpdatePeriod,
+            target: self,
+            selector: #selector(updateNetworkList),
+            userInfo: nil,
+            repeats: true
+        )
+        networkListUpdateTimer?.fire()
     }
 
     func menuDidClose(_ menu: NSMenu) {
@@ -266,39 +275,42 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
     }
 
     private func getDeviceInfo() {
-        DispatchQueue.global(qos: .background).async {
-            var bsdName: String = .unavailable
-            var macAddr: String = .unavailable
-            var itlwmVer: String = .unavailable
-            var platformInfo = platform_info_t()
+        Task { @MainActor in
+            let deviceInfo = await Task.detached(priority: .background) { () -> DeviceInfo in
+                var deviceInfo = DeviceInfo()
+                var platformInfo = platform_info_t()
 
-            if is_power_on() {
-                Log.debug("Wi-Fi powered on")
-            } else {
-                Log.debug("Wi-Fi powered off")
-            }
-
-            if get_platform_info(&platformInfo) {
-                bsdName = String(cCharArray: platformInfo.device_info_str)
-                macAddr = NetworkManager.getMACAddressFromBSD(bsd: bsdName) ?? macAddr
-                itlwmVer = String(cCharArray: platformInfo.driver_info_str)
-            }
-
-            DispatchQueue.main.async {
-                if let items = self as? StatusMenuItems {
-                    items.setValueForItem(self.bsdItem, value: bsdName)
-                    items.setValueForItem(self.macItem, value: macAddr)
-                    items.setValueForItem(self.itlwmVerItem, value: itlwmVer)
+                if is_power_on() {
+                    Log.debug("Wi-Fi powered on")
+                } else {
+                    Log.debug("Wi-Fi powered off")
                 }
+
+                if get_platform_info(&platformInfo) {
+                    deviceInfo.bsdName = String(cCharArray: platformInfo.device_info_str)
+                    deviceInfo.macAddr = NetworkManager.getMACAddressFromBSD(bsd: deviceInfo.bsdName) ??
+                        deviceInfo.macAddr
+                    deviceInfo.itlwmVer = String(cCharArray: platformInfo.driver_info_str)
+                }
+
+                // If not connected, try to connect saved networks
+                var stationInfo = station_info_t()
+                var state: UInt32 = 0
+                var power: Bool = false
+                get_power_state(&power)
+                let shouldScanSavedNetworks = get_80211_state(&state) && power &&
+                    (state != ITL80211_S_RUN.rawValue || get_station_info(&stationInfo) != KERN_SUCCESS)
+                deviceInfo.shouldScanSavedNetworks = shouldScanSavedNetworks
+                return deviceInfo
+            }.value
+
+            if let items = self as? StatusMenuItems {
+                items.setValueForItem(self.bsdItem, value: deviceInfo.bsdName)
+                items.setValueForItem(self.macItem, value: deviceInfo.macAddr)
+                items.setValueForItem(self.itlwmVerItem, value: deviceInfo.itlwmVer)
             }
 
-            // If not connected, try to connect saved networks
-            var stationInfo = station_info_t()
-            var state: UInt32 = 0
-            var power: Bool = false
-            get_power_state(&power)
-            if get_80211_state(&state) && power &&
-                (state != ITL80211_S_RUN.rawValue || get_station_info(&stationInfo) != KERN_SUCCESS) {
+            if deviceInfo.shouldScanSavedNetworks {
                 NetworkManager.scanSavedNetworks()
             }
         }
@@ -312,12 +324,10 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
         case .createReport:
             // Disable while bug report is being genetated, if autoenable == true, NSMenu ignores isEnable
             createReportItem.action = nil
-            DispatchQueue.global(qos: .background).async {
-                BugReporter.generateBugReport()
-                DispatchQueue.main.async {
-                    // Enable after generating report is finished
-                    self.createReportItem.action = #selector(self.clickMenuItem(_:))
-                }
+            Task { @MainActor in
+                await BugReporter.generateBugReport()
+                // Enable after generating report is finished
+                self.createReportItem.action = #selector(self.clickMenuItem(_:))
             }
         case .Legacy.turnWiFiOn:
             power_on()
@@ -346,26 +356,33 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
     }
 
     @objc private func updateStatus() {
-        DispatchQueue.global(qos: .background).async {
-            var powerState: Bool = false
-            let get_power_ret = get_power_state(&powerState)
-            var status: UInt32 = 0xFF
-            let get_state_ret = get_80211_state(&status)
+        Task { @MainActor in
+            let statusInfo = await Task.detached(priority: .background) { () -> StatusInfo in
+                var powerState: Bool = false
+                let getPowerResult = get_power_state(&powerState)
+                var status: UInt32 = 0xFF
+                let getStateResult = get_80211_state(&status)
 
-            DispatchQueue.main.async {
-                if get_power_ret && get_state_ret {
-                    self.isNetworkCardEnabled = powerState
-                } else {
-                    Log.error("Failed get card state")
-                }
-                self.isNetworkCardAvailable = get_power_ret
-                self.driverState = itl_80211_state(rawValue: status)
-                self.updateStationItems()
+                return StatusInfo(
+                    getPowerResult: getPowerResult,
+                    getStateResult: getStateResult,
+                    powerState: powerState,
+                    status: status
+                )
+            }.value
+
+            if statusInfo.getPowerResult && statusInfo.getStateResult {
+                self.isNetworkCardEnabled = statusInfo.powerState
+            } else {
+                Log.error("Failed get card state")
             }
+            self.isNetworkCardAvailable = statusInfo.getPowerResult
+            self.driverState = itl_80211_state(rawValue: statusInfo.status)
+            self.updateStationItems()
         }
     }
 
-    struct StationInfo {
+    struct StationInfo: Sendable {
         var ssid: String?
         var rssiValue: Int = 0
         var ipAddr: String = .unavailable
@@ -387,58 +404,59 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
     func updateStationItems() {
         guard isNetworkCardEnabled else { return }
 
-        DispatchQueue.global(qos: .background).async {
-            let info = self.getStationInfo()
-
-            DispatchQueue.main.async {
-                self.setCurrentNetworkItem(with: info)
-                self.setStationItems(with: info)
-                self.updateLastAssociationFailureItem()
-            }
+        Task { @MainActor in
+            let info = await self.getStationInfo()
+            self.setCurrentNetworkItem(with: info)
+            self.setStationItems(with: info)
+            await self.updateLastAssociationFailureItem()
         }
     }
 
-    private func getStationInfo() -> StationInfo {
-        var infoOut = StationInfo()
-        var infoIn = station_info_t()
+    private func getStationInfo() async -> StationInfo {
+        let driverState = driverState
+        let showAllOptions = showAllOptions
+        return await Task.detached(priority: .background) {
+            var infoOut = StationInfo()
+            var infoIn = station_info_t()
 
-        guard driverState == ITL80211_S_RUN,
-              get_station_info(&infoIn) == KERN_SUCCESS else {
+            guard driverState == ITL80211_S_RUN,
+                  get_station_info(&infoIn) == KERN_SUCCESS else {
+                return infoOut
+            }
+
+            infoOut.isNetworkConnected = true
+            infoOut.ssid = String(ssid: infoIn.ssid)
+            infoOut.rssiValue = Int(infoIn.rssi)
+
+            guard showAllOptions else { return infoOut }
+
+            var platformInfo = platform_info_t()
+            if get_platform_info(&platformInfo) {
+                let bsd = String(cCharArray: platformInfo.device_info_str)
+                infoOut.ipAddr = NetworkManager.getLocalAddress(bsd: bsd) ?? .unknown
+                infoOut.routerAddr = NetworkManager.getRouterAddress(bsd: bsd) ?? .unknown
+            }
+
+            infoOut.internet = NetworkManager.isReachable() ? .reachable : .unreachable
+            infoOut.security = .unknown
+            infoOut.bssid = String(format: "%02x:%02x:%02x:%02x:%02x:%02x",
+                                   infoIn.bssid.0,
+                                   infoIn.bssid.1,
+                                   infoIn.bssid.2,
+                                   infoIn.bssid.3,
+                                   infoIn.bssid.4,
+                                   infoIn.bssid.5)
+            infoOut.channel = "\(infoIn.channel) (\(infoIn.channel <= 14 ? 2.4 : 5) GHz, \(infoIn.band_width) MHz)"
+            infoOut.countryCode = .unknown
+            infoOut.rssi = "\(infoIn.rssi) dBm"
+            infoOut.noise = "\(infoIn.noise) dBm"
+            infoOut.txRate = "\(infoIn.rate) Mbps"
+            infoOut.phyMode = infoIn.op_mode.description
+            infoOut.mcsIndex = "\(infoIn.cur_mcs)"
+            infoOut.nss = .unknown
+
             return infoOut
-        }
-
-        infoOut.isNetworkConnected = true
-        infoOut.ssid = String(ssid: infoIn.ssid)
-        infoOut.rssiValue = Int(infoIn.rssi)
-
-        guard showAllOptions else { return infoOut }
-
-        var platformInfo = platform_info_t()
-        if get_platform_info(&platformInfo) {
-            let bsd = String(cCharArray: platformInfo.device_info_str)
-            infoOut.ipAddr = NetworkManager.getLocalAddress(bsd: bsd) ?? .unknown
-            infoOut.routerAddr = NetworkManager.getRouterAddress(bsd: bsd) ?? .unknown
-        }
-
-        infoOut.internet = NetworkManager.isReachable() ? .reachable : .unreachable
-        infoOut.security = .unknown
-        infoOut.bssid = String(format: "%02x:%02x:%02x:%02x:%02x:%02x",
-                            infoIn.bssid.0,
-                            infoIn.bssid.1,
-                            infoIn.bssid.2,
-                            infoIn.bssid.3,
-                            infoIn.bssid.4,
-                            infoIn.bssid.5)
-        infoOut.channel = "\(infoIn.channel) (\(infoIn.channel <= 14 ? 2.4 : 5) GHz, \(infoIn.band_width) MHz)"
-        infoOut.countryCode = .unknown
-        infoOut.rssi = "\(infoIn.rssi) dBm"
-        infoOut.noise = "\(infoIn.noise) dBm"
-        infoOut.txRate = "\(infoIn.rate) Mbps"
-        infoOut.phyMode = infoIn.op_mode.description
-        infoOut.mcsIndex = "\(infoIn.cur_mcs)"
-        infoOut.nss = .unknown
-
-        return infoOut
+        }.value
     }
 
     func setStationItems(with info: StationInfo) {
@@ -486,14 +504,16 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
         if let staSSID = info.ssid, wifiItemView.networkInfo.ssid != staSSID {
             wifiItemView.networkInfo = NetworkInfo(ssid: staSSID, rssi: info.rssiValue)
         } else {
-            wifiItemView.networkInfo.rssi = info.rssiValue
+            var networkInfo = wifiItemView.networkInfo
+            networkInfo.rssi = info.rssiValue
+            wifiItemView.networkInfo = networkInfo
             wifiItemView.updateImages()
         }
     }
 
-    func updateLastAssociationFailureItem() {
+    func updateLastAssociationFailureItem() async {
         guard let items = self as? StatusMenuItems else { return }
-        let failure = NetworkManager.lastAssociationFailure
+        let failure = await NetworkManager.lastAssociationFailure()
         lastAssociationFailureItem.isHidden = isNetworkConnected || failure == nil
         items.setValueForItem(lastAssociationFailureItem, value: failure ?? "")
     }
@@ -506,7 +526,9 @@ class StatusMenuBase: NSMenu, NSMenuDelegate {
             var enabled = true
 
             if let staInfo, staInfo.ssid == info.ssid {
-                staInfo.auth.security = info.auth.security
+                var currentNetworkInfo = staInfo
+                currentNetworkInfo.auth.security = info.auth.security
+                (self.currentNetworkItem.view as? WifiMenuItemView)?.networkInfo = currentNetworkInfo
                 (self.currentNetworkItem.view as? WifiMenuItemView)?.updateImages()
                 enabled = false
             }

@@ -9,6 +9,7 @@
 import AppKit
 import Foundation
 
+@MainActor
 final class Alert {
     private let text: String
 
@@ -20,17 +21,11 @@ final class Alert {
         let alert = NSAlert()
         alert.messageText = text
         alert.alertStyle = .critical
-
-        if Thread.isMainThread {
-            alert.runModal()
-        } else {
-            DispatchQueue.main.async {
-                alert.runModal()
-            }
-        }
+        alert.runModal()
     }
 }
 
+@MainActor
 final class CriticalAlert: NSObject {
     private let message: String
     private let informativeText: String

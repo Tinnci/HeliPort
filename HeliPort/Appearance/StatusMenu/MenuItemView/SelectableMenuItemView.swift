@@ -15,8 +15,10 @@
 
 import Cocoa
 
+@MainActor
 class SelectableMenuItemView: HidableMenuItemView {
 
+    @MainActor
     private class HoverView: NSView {
         override func draw(_ dirtyRect: NSRect) {
             super.draw(dirtyRect)

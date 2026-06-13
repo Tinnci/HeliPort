@@ -15,6 +15,7 @@
 
 import Cocoa
 
+@MainActor
 class StatusBarIconModern: StatusBarIconProvider {
     var transition: CATransition? {
         let transition = CATransition()
