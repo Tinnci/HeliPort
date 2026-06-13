@@ -1,9 +1,15 @@
 name: CI
 
 on:
-  - push
-  - pull_request
-  - workflow_dispatch
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish a stable release'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -39,7 +45,7 @@ jobs:
         CUR_TAG="$(git tag -l | grep -i 'alpha' | tail -1)"
         eval $(grep -m 1 "MARKETING_VERSION =" HeliPort.xcodeproj/project.pbxproj | tr -d ';' | tr -d '\t' | tr -d " ")
 
-        if [[ "$GITHUB_EVENT_NAME" != 'workflow_dispatch' ]]; then
+        if [[ "$GITHUB_EVENT_NAME" != 'workflow_dispatch' || "${{ inputs.publish_release }}" != 'true' ]]; then
           sed -i '' -e "s/CURRENT_PROJECT_VERSION =.*/CURRENT_PROJECT_VERSION = \"\$(MARKETING_VERSION)-alpha-${GIT_SHA}\";/g" HeliPort.xcodeproj/project.pbxproj
         else
           sed -i '' -e "s/CURRENT_PROJECT_VERSION =.*/CURRENT_PROJECT_VERSION = \"\$(MARKETING_VERSION)-stable-${GIT_SHA}\";/g" HeliPort.xcodeproj/project.pbxproj
@@ -106,7 +112,7 @@ jobs:
       shell: python
 
     - name: Debug Build
-      if: github.event_name != 'workflow_dispatch'
+      if: github.event_name != 'workflow_dispatch' || inputs.publish_release == false
       run: |
         set -o pipefail && xcodebuild ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO -scheme HeliPort -configuration Debug -derivedDataPath build -disableAutomaticPackageResolution CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO | xcbeautify --renderer terminal
 
@@ -115,7 +121,7 @@ jobs:
         set -o pipefail && xcodebuild ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO -scheme HeliPort -configuration Release -derivedDataPath build -disableAutomaticPackageResolution CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO | xcbeautify
 
     - name: Create Disk Image
-      if: (github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch'
+      if: (github.event_name == 'push' && github.ref_name == 'master') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
       run: |
         XCBUILD_PATH="build/Build/Products/Release"
         cp LICENSE $XCBUILD_PATH
@@ -154,13 +160,13 @@ jobs:
         } >> ReleaseNotes.md
 
     - name: Setup Release Variables
-      if: github.event_name == 'workflow_dispatch'
+      if: github.event_name == 'workflow_dispatch' && inputs.publish_release
       run: |
         echo "REL_TAG=v${VER}" >> "$GITHUB_ENV"
         echo "IS_PRE=false" >> "$GITHUB_ENV"
 
     - name: Generate Release Notes
-      if: (github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch'
+      if: (github.event_name == 'push' && github.ref_name == 'master') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
       run: |
         echo '### The latest updates are:' >> ReleaseNotes.md
         LAST_STABLE_TAG="$(git tag -l | grep -v 'alpha' | tail -1)"
@@ -169,14 +175,14 @@ jobs:
         git log -"${UPDATE_COUNT}" --format="- %H %s" | grep -v '.git\|Merge\|yml\|CI' | sed  '/^$/d' >> ReleaseNotes.md
 
     - name: Delete Old Prerelease
-      if: ((github.event_name == 'push' && github.ref_name == 'master') || github.event_name == 'workflow_dispatch') && env.OLD_PRE_TAG != 'NULL'
+      if: ((github.event_name == 'push' && github.ref_name == 'master') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)) && env.OLD_PRE_TAG != 'NULL'
       run: gh release delete "${OLD_PRE_TAG}" --cleanup-tag -y
       continue-on-error: true
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Generate Sparkle Appcast
-      if: github.event_name == 'workflow_dispatch'
+      if: github.event_name == 'workflow_dispatch' && inputs.publish_release
       run: |
         REPO_COMMIT_URL='https://github.com/OpenIntelWireless/HeliPort/commit/'
         INDENT='                    '
@@ -218,7 +224,7 @@ jobs:
         SPARKLE_KEY: ${{ secrets.SPARKLE_KEY }}
 
     - name: Publish GitHub Release
-      if: ((github.event_name == 'push' && github.ref_name == 'master' && contains(github.event.head_commit.message, 'Bump version') == false) || github.event_name == 'workflow_dispatch')
+      if: ((github.event_name == 'push' && github.ref_name == 'master' && contains(github.event.head_commit.message, 'Bump version') == false) || (github.event_name == 'workflow_dispatch' && inputs.publish_release))
       uses: ncipollo/release-action@v1.21.0
       with:
         allowUpdates: true
